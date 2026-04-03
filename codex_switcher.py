@@ -255,9 +255,7 @@ def http_head_average(url: str, api_key: str, attempts: int) -> Optional[float]:
         import requests
         import urllib3
     except Exception as exc:  # pragma: no cover - runtime dependency
-        raise RuntimeError(
-            "缺少 requests 依赖，请先执行：pip install requests"
-        ) from exc
+        raise RuntimeError("缺少 requests 依赖，请先执行：uv sync") from exc
     user_agent = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "

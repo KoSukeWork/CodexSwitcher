@@ -18,6 +18,12 @@
 - 在「中转站接口」中进行接口与模型可用性检测
 - 在「Codex会话管理」中进行本地所有历史会话检索、查看、一键Codex CLI继续该会话、导出归档到JSON / Markdown、清理会话
 
+## 开发与打包
+- 项目依赖现已通过 `uv` 管理
+- 首次拉取后执行 `uv sync`
+- 需要打包时执行 `uv sync --group build`，或直接运行 `.\build.ps1`
+- 本地运行可使用 `uv run python pyside_switcher.py`
+
 ## 依赖与第三方许可
 本项目为桌面版（Windows）打包发布，核心依赖包含：
 - PySide6（Qt for Python）

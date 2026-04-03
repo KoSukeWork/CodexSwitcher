@@ -1,30 +1,44 @@
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 $ErrorActionPreference = "Stop"
 
-Write-Host "[1/2] 安装依赖（已安装可跳过）"
-Write-Host "py -m pip install pyinstaller requests"
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    throw "uv was not found. Please install uv first."
+}
 
-py -m pip install -U pyinstaller requests PySide6 qt-material pillow
+$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+Push-Location $repoRoot
+try {
+    Write-Host "[1/3] Sync dependencies via uv"
+    uv sync --locked --group build
+    if ($LASTEXITCODE -ne 0) {
+        throw "Dependency sync failed with exit code: $LASTEXITCODE"
+    }
 
-Write-Host "[1.5/2] 生成 ico"
-@'
+    Write-Host "[2/3] Build ico"
+    @'
 from pathlib import Path
 try:
     from PIL import Image
 except Exception as exc:
-    raise SystemExit(f"Pillow 不可用: {exc}")
+    raise SystemExit(f"Pillow is unavailable: {exc}")
 src = Path("icon_app.png")
 dst = Path("icon_app.ico")
 if src.exists():
     img = Image.open(src)
     img.save(dst, sizes=[(256,256), (128,128), (64,64), (48,48), (32,32), (16,16)])
-'@ | python -
+'@ | uv run --locked python -
+    if ($LASTEXITCODE -ne 0) {
+        throw "ICO generation failed with exit code: $LASTEXITCODE"
+    }
 
-Write-Host "[2/2] 打包"
-py -m PyInstaller --clean --noconfirm codex_switcher.spec
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "打包失败，退出码：$LASTEXITCODE"
-  exit $LASTEXITCODE
+    Write-Host "[3/3] Package with PyInstaller"
+    uv run --locked --group build pyinstaller --clean --noconfirm codex_switcher.spec
+    if ($LASTEXITCODE -ne 0) {
+      throw "Packaging failed with exit code: $LASTEXITCODE"
+    }
+
+    Write-Host "Done: dist/CodexSwitcher.exe"
 }
-
-Write-Host "完成：dist/CodexSwitcher.exe"
+finally {
+    Pop-Location
+}
