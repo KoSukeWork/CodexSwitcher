@@ -99,6 +99,32 @@ STATUS_TEXT = {
     "unknown": "未知",
 }
 
+COLOR_BG = "#F3F6FB"
+COLOR_PANEL = "#E8EEF7"
+COLOR_SURFACE = "#FFFFFF"
+COLOR_SURFACE_ALT = "#F8FAFC"
+COLOR_BORDER = "#CBD5E1"
+COLOR_BORDER_STRONG = "#94A3B8"
+COLOR_TEXT = "#111827"
+COLOR_MUTED = "#526071"
+COLOR_ACCENT = "#2563EB"
+COLOR_ACCENT_HOVER = "#1D4ED8"
+COLOR_ACCENT_SOFT = "#DBEAFE"
+COLOR_ACCENT_TEXT = "#FFFFFF"
+COLOR_WARNING = "#B91C1C"
+COLOR_WARNING_BG = "#FEE2E2"
+COLOR_STATUS_INFO = "#0F766E"
+COLOR_STATUS_WARN = "#B45309"
+COLOR_STATUS_ALERT = "#C2410C"
+COLOR_STATUS_ERROR = "#B91C1C"
+COLOR_STATUS_UNKNOWN = "#64748B"
+MUTED_LABEL_STYLE = f"color: {COLOR_MUTED};"
+PRIMARY_LABEL_STYLE = f"color: {COLOR_TEXT};"
+WARNING_BADGE_STYLE = (
+    f"color: {COLOR_WARNING}; font-weight: 700; "
+    f"background-color: {COLOR_WARNING_BG}; padding: 2px 6px; border-radius: 4px;"
+)
+
 
 def run_in_ui(fn) -> None:
     app = QtWidgets.QApplication.instance()
@@ -118,9 +144,9 @@ def message_warn(parent: QtWidgets.QWidget, title: str, text: str) -> None:
 
 def apply_white_shadow(widget: QtWidgets.QWidget) -> None:
     effect = QtWidgets.QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(12)
-    effect.setColor(QtGui.QColor(255, 255, 255, 180))
-    effect.setOffset(0, 0)
+    effect.setBlurRadius(24)
+    effect.setColor(QtGui.QColor(15, 23, 42, 28))
+    effect.setOffset(0, 6)
     widget.setGraphicsEffect(effect)
 
 
@@ -617,7 +643,7 @@ class AccountPage(QtWidgets.QWidget):
             '</ul>'
         )
         hint_label.setWordWrap(True)
-        hint_label.setStyleSheet("color: #666;")
+        hint_label.setStyleSheet(MUTED_LABEL_STYLE)
         hint_layout.addWidget(hint_label)
         layout.addWidget(hint_group)
 
@@ -934,7 +960,7 @@ class NetworkDiagnosticsPage(QtWidgets.QWidget):
             '</ul>'
         )
         hint_label.setWordWrap(True)
-        hint_label.setStyleSheet("color: #666;")
+        hint_label.setStyleSheet(MUTED_LABEL_STYLE)
         hint_layout.addWidget(hint_label)
         probe_layout.addWidget(hint_group)
 
@@ -984,7 +1010,7 @@ class NetworkDiagnosticsPage(QtWidgets.QWidget):
 
         timer.timeout.connect(tick)
         timer.start(120)
-        label.setStyleSheet("color: #e53935; font-weight: 700; background-color: #fff3e0; padding: 2px 6px; border-radius: 4px;")
+        label.setStyleSheet(WARNING_BADGE_STYLE)
         pool = getattr(self, "_marquee", None)
         if pool is None:
             pool = {}
@@ -2952,9 +2978,9 @@ class VSCodePluginPage(QtWidgets.QWidget):
         layout.addWidget(model_group)
 
         hint = QtWidgets.QLabel(
-            '<span style="color:#000;font-weight:700;">修改后请重启 VS Code 或插件。</span><br>'
-            '<span style="color:#666;">原理：工具会把你输入的模型加入可用模型列表，并放宽仅 ChatGPT 登录的限制，让 API Key 也能选到该模型。</span>'
-            '<ul style="margin:6px 0 0 18px; padding:0; color:#666;">'
+            f'<span style="color:{COLOR_TEXT};font-weight:700;">修改后请重启 VS Code 或插件。</span><br>'
+            f'<span style="color:{COLOR_MUTED};">原理：工具会把你输入的模型加入可用模型列表，并放宽仅 ChatGPT 登录的限制，让 API Key 也能选到该模型。</span>'
+            f'<ul style="margin:6px 0 0 18px; padding:0; color:{COLOR_MUTED};">'
             '<li>“最新版本”来自 Marketplace，若离线会显示“获取失败”。</li>'
             '<li>“恢复默认设置”会恢复最近一次备份（保留原逻辑）。</li>'
             '</ul>'
@@ -3362,7 +3388,7 @@ class SettingsPage(QtWidgets.QWidget):
             "反馈渠道:    L站、GitHub或者电子邮件:nkosi.fang@gmail.com<br>"
             "<div style=\"text-align:right;\">nkosi</div>"
         )
-        note.setStyleSheet("color: #000;")
+        note.setStyleSheet(PRIMARY_LABEL_STYLE)
         note.setWordWrap(True)
         note.setTextFormat(QtCore.Qt.RichText)
         letter_layout.addWidget(note)
@@ -3605,7 +3631,7 @@ class SessionManagerPage(QtWidgets.QWidget):
 
         self.search_hint = QtWidgets.QLabel("高级语法：空格分词；模式选 AND/OR；包含“|”强制 OR")
         self.search_hint.setWordWrap(True)
-        self.search_hint.setStyleSheet("color: #666;")
+        self.search_hint.setStyleSheet(MUTED_LABEL_STYLE)
         left_layout.addWidget(self.search_hint)
 
         left_layout.addSpacing(20)
@@ -3617,7 +3643,7 @@ class SessionManagerPage(QtWidgets.QWidget):
 
         self.search_status = QtWidgets.QLabel("")
         self.search_status.setWordWrap(True)
-        self.search_status.setStyleSheet("color: #666;")
+        self.search_status.setStyleSheet(MUTED_LABEL_STYLE)
         left_layout.addWidget(self.search_status)
 
         progress_row = QtWidgets.QHBoxLayout()
@@ -3664,7 +3690,7 @@ class SessionManagerPage(QtWidgets.QWidget):
         self.only_ua_hint = QtWidgets.QLabel("不勾选：看“所有原始记录”，包括系统提示、开发者说明、工具响应等")
         self.only_ua_hint.setWordWrap(True)
         self.only_ua_hint.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
-        self.only_ua_hint.setStyleSheet("color: #666;")
+        self.only_ua_hint.setStyleSheet(MUTED_LABEL_STYLE)
         right_layout.addWidget(self.only_ua_hint)
 
         self.detail_text = QtWidgets.QPlainTextEdit()
@@ -4664,11 +4690,11 @@ class OpenAIStatusPage(QtWidgets.QWidget):
         header = f"总体状态：{html.escape(str(desc))} ({html.escape(str(indicator))})"
 
         status_colors = {
-            "under_maintenance": "#5bc0de",
-            "degraded_performance": "#f0ad4e",
-            "partial_outage": "#fd7e14",
-            "major_outage": "#d9534f",
-            "unknown": "#888888",
+            "under_maintenance": COLOR_STATUS_INFO,
+            "degraded_performance": COLOR_STATUS_WARN,
+            "partial_outage": COLOR_STATUS_ALERT,
+            "major_outage": COLOR_STATUS_ERROR,
+            "unknown": COLOR_STATUS_UNKNOWN,
         }
 
         abnormal: list[tuple[str, str]] = []
@@ -4686,7 +4712,7 @@ class OpenAIStatusPage(QtWidgets.QWidget):
             if raw_status == "operational":
                 normal.append(line)
             else:
-                color = status_colors.get(raw_status, "#d9534f")
+                color = status_colors.get(raw_status, COLOR_STATUS_ERROR)
                 abnormal.append((line, color))
 
         html_lines = [header, ""]
@@ -4716,11 +4742,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
 
         nav_widget = QtWidgets.QWidget()
+        nav_widget.setObjectName("navPanel")
         nav = QtWidgets.QVBoxLayout(nav_widget)
         root.addWidget(nav_widget)
         nav_widget.setFixedWidth(140)
 
         self.stack = QtWidgets.QStackedWidget()
+        self.stack.setObjectName("pageStack")
         root.addWidget(self.stack, 1)
 
         self.pages = {}
@@ -4758,6 +4786,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _add_nav_button(self, layout: QtWidgets.QVBoxLayout, label: str, key: str) -> None:
         btn = QtWidgets.QPushButton(label)
         btn.setCheckable(True)
+        btn.setProperty("navButton", True)
         btn.clicked.connect(lambda _: self.show_page(key))
         layout.addWidget(btn)
         self.buttons.append((key, btn))
@@ -4782,7 +4811,7 @@ def apply_material_theme(app: QtWidgets.QApplication) -> bool:
     if apply_stylesheet is None:
         return False
     try:
-        apply_stylesheet(app, theme='light_teal.xml')
+        apply_stylesheet(app, theme="light_teal.xml")
         return True
     except Exception:
         return False
@@ -4791,81 +4820,136 @@ def apply_material_theme(app: QtWidgets.QApplication) -> bool:
 def apply_light_theme(app: QtWidgets.QApplication) -> None:
     app.setStyle("Fusion")
     palette = QtGui.QPalette()
-    palette.setColor(QtGui.QPalette.Window, QtGui.QColor(245, 245, 245))
-    palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor(30, 30, 30))
-    palette.setColor(QtGui.QPalette.Base, QtGui.QColor(255, 255, 255))
-    palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(245, 245, 245))
-    palette.setColor(QtGui.QPalette.ToolTipBase, QtGui.QColor(255, 255, 255))
-    palette.setColor(QtGui.QPalette.ToolTipText, QtGui.QColor(30, 30, 30))
-    palette.setColor(QtGui.QPalette.Text, QtGui.QColor(30, 30, 30))
-    palette.setColor(QtGui.QPalette.Button, QtGui.QColor(245, 245, 245))
-    palette.setColor(QtGui.QPalette.ButtonText, QtGui.QColor(30, 30, 30))
-    palette.setColor(QtGui.QPalette.BrightText, QtGui.QColor(200, 0, 0))
-    palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(0, 136, 136))
-    palette.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(255, 255, 255))
+    palette.setColor(QtGui.QPalette.Window, QtGui.QColor(COLOR_BG))
+    palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor(COLOR_TEXT))
+    palette.setColor(QtGui.QPalette.Base, QtGui.QColor(COLOR_SURFACE))
+    palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(COLOR_SURFACE_ALT))
+    palette.setColor(QtGui.QPalette.ToolTipBase, QtGui.QColor(COLOR_SURFACE))
+    palette.setColor(QtGui.QPalette.ToolTipText, QtGui.QColor(COLOR_TEXT))
+    palette.setColor(QtGui.QPalette.Text, QtGui.QColor(COLOR_TEXT))
+    palette.setColor(QtGui.QPalette.Button, QtGui.QColor(COLOR_SURFACE_ALT))
+    palette.setColor(QtGui.QPalette.ButtonText, QtGui.QColor(COLOR_TEXT))
+    palette.setColor(QtGui.QPalette.BrightText, QtGui.QColor(COLOR_WARNING))
+    palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(COLOR_ACCENT))
+    palette.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(COLOR_ACCENT_TEXT))
+    palette.setColor(QtGui.QPalette.Link, QtGui.QColor(COLOR_ACCENT))
+    palette.setColor(QtGui.QPalette.LinkVisited, QtGui.QColor(COLOR_ACCENT_HOVER))
     app.setPalette(palette)
 
     app.setStyleSheet(
-        """
-        QWidget#appRoot {
-            background: qlineargradient(
-                x1: 0, y1: 0, x2: 1, y2: 1,
-                stop: 0 #F4A3D6, stop: 0.4 #F1A7E0, stop: 0.8 #C5B2FF, stop: 1 #A8D6FF
-            );
-        }
-        QLabel {
-            color: #2C2540;
-        }
-        QGroupBox {
-            border: 1px solid #FFFFFF;
-            border-radius: 8px;
-            margin-top: 10px;
-            background-color: rgba(255, 255, 255, 200);
-        }
-        QGroupBox::title {
+        f"""
+        QWidget {{
+            color: {COLOR_TEXT};
+        }}
+        QWidget#appRoot {{
+            background: {COLOR_BG};
+        }}
+        QWidget#navPanel {{
+            background: {COLOR_PANEL};
+            border-right: 1px solid {COLOR_BORDER};
+            border-top-left-radius: 10px;
+            border-bottom-left-radius: 10px;
+        }}
+        QStackedWidget#pageStack {{
+            background: transparent;
+        }}
+        QLabel {{
+            color: {COLOR_TEXT};
+        }}
+        QGroupBox {{
+            border: 1px solid {COLOR_BORDER};
+            border-radius: 10px;
+            margin-top: 12px;
+            padding-top: 8px;
+            background-color: {COLOR_SURFACE};
+        }}
+        QGroupBox::title {{
             subcontrol-origin: margin;
             subcontrol-position: top left;
-            padding: 0 8px;
-            color: #2C2540;
-            background: transparent;
-        }
-        QLineEdit, QPlainTextEdit, QListWidget, QTableWidget {
-            border: 1px solid rgba(108, 99, 255, 150);
-            border-radius: 6px;
-            background: rgba(255, 255, 255, 230);
-            color: #2C2540;
-        }
-        QLineEdit:focus, QPlainTextEdit:focus, QListWidget:focus, QTableWidget:focus {
-            border: 1px solid rgba(108, 99, 255, 220);
-        }
-        QPushButton {
-            background: rgba(255, 255, 255, 220);
-            border: 1px solid rgba(108, 99, 255, 140);
-            border-radius: 6px;
-            padding: 4px 10px;
-            color: #2C2540;
-        }
-        QPushButton:hover {
-            border: 1px solid rgba(108, 99, 255, 200);
-        }
-        QPushButton:checked {
-            background: rgba(108, 99, 255, 40);
-            border: 1px solid rgba(108, 99, 255, 220);
-        }
-        QHeaderView::section {
-            background-color: rgba(255, 255, 255, 200);
-            border: 1px solid rgba(108, 99, 255, 140);
+            left: 10px;
+            padding: 0 6px;
+            color: {COLOR_TEXT};
+            background: {COLOR_SURFACE};
+            font-weight: 600;
+        }}
+        QLineEdit, QPlainTextEdit, QTextEdit, QListWidget, QTableWidget, QComboBox, QSpinBox, QDateEdit {{
+            border: 1px solid {COLOR_BORDER};
+            border-radius: 8px;
+            background: {COLOR_SURFACE};
+            color: {COLOR_TEXT};
+            selection-background-color: {COLOR_ACCENT};
+            selection-color: {COLOR_ACCENT_TEXT};
+        }}
+        QLineEdit, QComboBox, QSpinBox, QDateEdit {{
+            padding: 4px 8px;
+            min-height: 18px;
+        }}
+        QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QListWidget:focus, QTableWidget:focus, QComboBox:focus, QSpinBox:focus, QDateEdit:focus {{
+            border: 1px solid {COLOR_ACCENT};
+        }}
+        QPushButton {{
+            background: {COLOR_SURFACE_ALT};
+            border: 1px solid {COLOR_BORDER};
+            border-radius: 8px;
+            padding: 5px 12px;
+            color: {COLOR_TEXT};
+        }}
+        QPushButton:hover {{
+            border: 1px solid {COLOR_ACCENT};
+            background: {COLOR_ACCENT_SOFT};
+        }}
+        QPushButton:checked {{
+            background: {COLOR_ACCENT};
+            border: 1px solid {COLOR_ACCENT};
+            color: {COLOR_ACCENT_TEXT};
+            font-weight: 600;
+        }}
+        QPushButton:disabled {{
+            color: {COLOR_MUTED};
+            background: {COLOR_PANEL};
+            border: 1px solid {COLOR_BORDER};
+        }}
+        QPushButton[navButton="true"] {{
+            text-align: left;
+            padding: 8px 12px;
+            font-weight: 600;
+        }}
+        QPushButton[navButton="true"]:hover:!checked {{
+            background: {COLOR_SURFACE};
+            border: 1px solid {COLOR_BORDER_STRONG};
+        }}
+        QAbstractItemView {{
+            background: {COLOR_SURFACE};
+            alternate-background-color: {COLOR_SURFACE_ALT};
+            color: {COLOR_TEXT};
+            selection-background-color: {COLOR_ACCENT};
+            selection-color: {COLOR_ACCENT_TEXT};
+        }}
+        QHeaderView::section {{
+            background-color: {COLOR_SURFACE_ALT};
+            border: 1px solid {COLOR_BORDER};
             padding: 4px 6px;
-            color: #2C2540;
-        }
+            color: {COLOR_MUTED};
+            font-weight: 600;
+        }}
+        QProgressBar {{
+            border: 1px solid {COLOR_BORDER};
+            border-radius: 6px;
+            background: {COLOR_SURFACE};
+            color: {COLOR_TEXT};
+            text-align: center;
+        }}
+        QProgressBar::chunk {{
+            background: {COLOR_ACCENT};
+            border-radius: 5px;
+        }}
 """
     )
 
 
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
-    if not apply_material_theme(app):
-        apply_light_theme(app)
+    apply_light_theme(app)
     icon_path = resolve_asset("icon_tray.png")
     if icon_path.exists():
         app.setWindowIcon(QtGui.QIcon(str(icon_path)))
