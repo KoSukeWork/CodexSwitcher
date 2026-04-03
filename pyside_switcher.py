@@ -100,31 +100,58 @@ STATUS_TEXT = {
     "unknown": "未知",
 }
 
-COLOR_BG = "#F3F6FB"
-COLOR_PANEL = "#E8EEF7"
-COLOR_SURFACE = "#FFFFFF"
-COLOR_SURFACE_ALT = "#F8FAFC"
-COLOR_BORDER = "#CBD5E1"
-COLOR_BORDER_STRONG = "#94A3B8"
-COLOR_TEXT = "#111827"
-COLOR_MUTED = "#526071"
-COLOR_ACCENT = "#2563EB"
-COLOR_ACCENT_HOVER = "#1D4ED8"
-COLOR_ACCENT_SOFT = "#DBEAFE"
-COLOR_ACCENT_TEXT = "#FFFFFF"
-COLOR_WARNING = "#B91C1C"
-COLOR_WARNING_BG = "#FEE2E2"
-COLOR_STATUS_INFO = "#0F766E"
-COLOR_STATUS_WARN = "#B45309"
-COLOR_STATUS_ALERT = "#C2410C"
-COLOR_STATUS_ERROR = "#B91C1C"
-COLOR_STATUS_UNKNOWN = "#64748B"
-MUTED_LABEL_STYLE = f"color: {COLOR_MUTED};"
-PRIMARY_LABEL_STYLE = f"color: {COLOR_TEXT};"
-WARNING_BADGE_STYLE = (
-    f"color: {COLOR_WARNING}; font-weight: 700; "
-    f"background-color: {COLOR_WARNING_BG}; padding: 2px 6px; border-radius: 4px;"
-)
+DEFAULT_THEME_MODE = "light"
+
+THEME_PRESETS = {
+    "light": {
+        "bg": "#F3F6FB",
+        "panel": "#E8EEF7",
+        "surface": "#FFFFFF",
+        "surface_alt": "#F8FAFC",
+        "border": "#CBD5E1",
+        "border_strong": "#94A3B8",
+        "text": "#111827",
+        "muted": "#526071",
+        "accent": "#2563EB",
+        "accent_hover": "#1D4ED8",
+        "accent_soft": "#DBEAFE",
+        "accent_text": "#FFFFFF",
+        "warning": "#B91C1C",
+        "warning_bg": "#FEE2E2",
+        "status_info": "#0F766E",
+        "status_warn": "#B45309",
+        "status_alert": "#C2410C",
+        "status_error": "#B91C1C",
+        "status_unknown": "#64748B",
+        "shadow_rgba": (15, 23, 42, 28),
+        "shadow_blur": 24,
+        "shadow_offset_y": 6,
+    },
+    "dark": {
+        "bg": "#0F172A",
+        "panel": "#111827",
+        "surface": "#1E293B",
+        "surface_alt": "#273449",
+        "border": "#334155",
+        "border_strong": "#475569",
+        "text": "#E5E7EB",
+        "muted": "#94A3B8",
+        "accent": "#60A5FA",
+        "accent_hover": "#93C5FD",
+        "accent_soft": "#1D4ED8",
+        "accent_text": "#0F172A",
+        "warning": "#FCA5A5",
+        "warning_bg": "#7F1D1D",
+        "status_info": "#2DD4BF",
+        "status_warn": "#FBBF24",
+        "status_alert": "#FB923C",
+        "status_error": "#F87171",
+        "status_unknown": "#94A3B8",
+        "shadow_rgba": (0, 0, 0, 110),
+        "shadow_blur": 28,
+        "shadow_offset_y": 8,
+    },
+}
 
 
 def run_in_ui(fn) -> None:
@@ -133,6 +160,38 @@ def run_in_ui(fn) -> None:
         fn()
         return
     QtCore.QTimer.singleShot(0, app, fn)
+
+
+def normalize_theme_mode(value: object) -> str:
+    if isinstance(value, str) and value.lower() == "dark":
+        return "dark"
+    return DEFAULT_THEME_MODE
+
+
+def get_theme_colors(mode: Optional[object] = None) -> Dict[str, object]:
+    if mode is None:
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            mode = app.property("themeMode")
+    return THEME_PRESETS[normalize_theme_mode(mode)]
+
+
+def _refresh_widget_style(widget: QtWidgets.QWidget) -> None:
+    style = widget.style()
+    if style is not None:
+        style.unpolish(widget)
+        style.polish(widget)
+    widget.update()
+
+
+def set_label_tone(widget: QtWidgets.QWidget, tone: Optional[str]) -> None:
+    widget.setProperty("tone", tone)
+    _refresh_widget_style(widget)
+
+
+def set_warning_badge(widget: QtWidgets.QWidget, enabled: bool) -> None:
+    widget.setProperty("warningBadge", enabled)
+    _refresh_widget_style(widget)
 
 
 def get_userprofile_dir() -> Path:
@@ -165,11 +224,16 @@ def message_warn(parent: QtWidgets.QWidget, title: str, text: str) -> None:
 
 
 def apply_white_shadow(widget: QtWidgets.QWidget) -> None:
-    effect = QtWidgets.QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(24)
-    effect.setColor(QtGui.QColor(15, 23, 42, 28))
-    effect.setOffset(0, 6)
-    widget.setGraphicsEffect(effect)
+    colors = get_theme_colors()
+    widget.setProperty("usesCardShadow", True)
+    effect = widget.graphicsEffect()
+    if not isinstance(effect, QtWidgets.QGraphicsDropShadowEffect):
+        effect = QtWidgets.QGraphicsDropShadowEffect(widget)
+        widget.setGraphicsEffect(effect)
+    shadow_rgba = colors["shadow_rgba"]
+    effect.setBlurRadius(int(colors["shadow_blur"]))
+    effect.setColor(QtGui.QColor(*shadow_rgba))
+    effect.setOffset(0, int(colors["shadow_offset_y"]))
 
 
 def message_error(parent: QtWidgets.QWidget, title: str, text: str) -> None:
@@ -511,6 +575,7 @@ def probe_endpoints(
 class AppState:
     def __init__(self) -> None:
         self.store = load_store()
+        self.theme_mode = normalize_theme_mode(self.store.get("theme_mode"))
         self.active_account = get_active_account(self.store)
         self.codex_path: Optional[str] = None
         self.codex_version: Optional[str] = None
@@ -665,7 +730,7 @@ class AccountPage(QtWidgets.QWidget):
             '</ul>'
         )
         hint_label.setWordWrap(True)
-        hint_label.setStyleSheet(MUTED_LABEL_STYLE)
+        set_label_tone(hint_label, "muted")
         hint_layout.addWidget(hint_label)
         layout.addWidget(hint_group)
 
@@ -982,7 +1047,7 @@ class NetworkDiagnosticsPage(QtWidgets.QWidget):
             '</ul>'
         )
         hint_label.setWordWrap(True)
-        hint_label.setStyleSheet(MUTED_LABEL_STYLE)
+        set_label_tone(hint_label, "muted")
         hint_layout.addWidget(hint_label)
         probe_layout.addWidget(hint_group)
 
@@ -1021,7 +1086,13 @@ class NetworkDiagnosticsPage(QtWidgets.QWidget):
             frames.append(f"{' ' * i}{trail}")
         for i in range(pad - 2, -1, -1):
             frames.append(f"{' ' * i}{trail}")
-        state = {"index": 0, "frames": frames, "base": base_text, "label": label, "style": label.styleSheet()}
+        state = {
+            "index": 0,
+            "frames": frames,
+            "base": base_text,
+            "label": label,
+            "warning_badge": bool(label.property("warningBadge")),
+        }
         timer = QtCore.QTimer(self)
 
         def tick() -> None:
@@ -1032,7 +1103,7 @@ class NetworkDiagnosticsPage(QtWidgets.QWidget):
 
         timer.timeout.connect(tick)
         timer.start(120)
-        label.setStyleSheet(WARNING_BADGE_STYLE)
+        set_warning_badge(label, True)
         pool = getattr(self, "_marquee", None)
         if pool is None:
             pool = {}
@@ -1047,9 +1118,8 @@ class NetworkDiagnosticsPage(QtWidgets.QWidget):
         timer, state = pool.pop(key)
         timer.stop()
         label = state.get("label")
-        prev_style = state.get("style")
-        if label is not None and prev_style is not None:
-            label.setStyleSheet(prev_style)
+        if label is not None:
+            set_warning_badge(label, bool(state.get("warning_badge")))
 
     def copy_supported_urls(self) -> None:
         urls = getattr(self, "_supported_urls", [])
@@ -2223,7 +2293,7 @@ class ConfigSwitchPage(QtWidgets.QWidget):
         )
         hint_label.setTextFormat(QtCore.Qt.RichText)
         hint_label.setWordWrap(True)
-        hint_label.setStyleSheet(MUTED_LABEL_STYLE)
+        set_label_tone(hint_label, "muted")
         hint_layout.addWidget(hint_label)
         layout.addWidget(hint_group)
 
@@ -3353,9 +3423,9 @@ class VSCodePluginPage(QtWidgets.QWidget):
         layout.addWidget(model_group)
 
         hint = QtWidgets.QLabel(
-            f'<span style="color:{COLOR_TEXT};font-weight:700;">修改后请重启 VS Code 或插件。</span><br>'
-            f'<span style="color:{COLOR_MUTED};">原理：工具会把你输入的模型加入可用模型列表，并放宽仅 ChatGPT 登录的限制，让 API Key 也能选到该模型。</span>'
-            f'<ul style="margin:6px 0 0 18px; padding:0; color:{COLOR_MUTED};">'
+            '<b>修改后请重启 VS Code 或插件。</b><br>'
+            '原理：工具会把你输入的模型加入可用模型列表，并放宽仅 ChatGPT 登录的限制，让 API Key 也能选到该模型。'
+            '<ul style="margin:6px 0 0 18px; padding:0;">'
             '<li>“最新版本”来自 Marketplace，若离线会显示“获取失败”。</li>'
             '<li>“恢复默认设置”会恢复最近一次备份（保留原逻辑）。</li>'
             '</ul>'
@@ -3722,6 +3792,24 @@ class SettingsPage(QtWidgets.QWidget):
         header.setFont(self._header_font())
         layout.addWidget(header)
 
+        appearance_group = QtWidgets.QGroupBox("界面设置")
+        apply_white_shadow(appearance_group)
+        appearance_layout = QtWidgets.QHBoxLayout(appearance_group)
+        self.theme_label = QtWidgets.QLabel("界面主题")
+        self.theme_combo = QtWidgets.QComboBox()
+        self.theme_combo.setObjectName("themeCombo")
+        self.theme_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self.theme_combo.addItem("浅色模式", "light")
+        self.theme_combo.addItem("黑暗模式", "dark")
+        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
+        self.theme_status = QtWidgets.QLabel("")
+        set_label_tone(self.theme_status, "muted")
+        appearance_layout.addWidget(self.theme_label)
+        appearance_layout.addWidget(self.theme_combo)
+        appearance_layout.addWidget(self.theme_status, 1)
+        appearance_layout.addStretch(1)
+        layout.addWidget(appearance_group)
+
         info_group = QtWidgets.QGroupBox("版本信息")
         apply_white_shadow(info_group)
         info_layout = QtWidgets.QVBoxLayout(info_group)
@@ -3763,7 +3851,6 @@ class SettingsPage(QtWidgets.QWidget):
             "反馈渠道:    L站、GitHub或者电子邮件:nkosi.fang@gmail.com<br>"
             "<div style=\"text-align:right;\">nkosi</div>"
         )
-        note.setStyleSheet(PRIMARY_LABEL_STYLE)
         note.setWordWrap(True)
         note.setTextFormat(QtCore.Qt.RichText)
         letter_layout.addWidget(note)
@@ -3772,6 +3859,8 @@ class SettingsPage(QtWidgets.QWidget):
         self._latest_url = f"https://github.com/{APP_REPO}/releases/latest"
         self._checked_once = False
         self._notified = False
+        self._update_theme_combo_width()
+        self._sync_theme_combo()
 
     def _header_font(self) -> QtGui.QFont:
         font = QtGui.QFont("Segoe UI", 12)
@@ -3779,10 +3868,43 @@ class SettingsPage(QtWidgets.QWidget):
         return font
 
     def on_show(self) -> None:
+        self._sync_theme_combo()
         if not self._checked_once:
             self._checked_once = True
             self.check_update(auto=True)
         return
+
+    def _sync_theme_combo(self) -> None:
+        mode = normalize_theme_mode(self.state.store.get("theme_mode"))
+        index = self.theme_combo.findData(mode)
+        self.theme_combo.blockSignals(True)
+        if index >= 0:
+            self.theme_combo.setCurrentIndex(index)
+        self.theme_combo.blockSignals(False)
+        self.theme_status.setText(f"当前：{'黑暗模式' if mode == 'dark' else '浅色模式'}（立即生效）")
+
+    def _update_theme_combo_width(self) -> None:
+        fm = self.theme_combo.fontMetrics()
+        text_width = max(
+            (fm.horizontalAdvance(self.theme_combo.itemText(i)) for i in range(self.theme_combo.count())),
+            default=0,
+        )
+        self.theme_combo.setFixedWidth(max(72, text_width + 28))
+
+    def on_theme_changed(self, index: int) -> None:
+        mode = normalize_theme_mode(self.theme_combo.itemData(index))
+        self.state.theme_mode = mode
+        self.state.store["theme_mode"] = mode
+        try:
+            save_store(self.state.store)
+        except Exception as exc:
+            message_error(self, "失败", f"保存主题设置失败：{exc}")
+            return
+
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            apply_theme(app, mode)
+        self.theme_status.setText(f"当前：{'黑暗模式' if mode == 'dark' else '浅色模式'}（立即生效）")
 
     def open_release_page(self) -> None:
         QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._latest_url))
@@ -4006,7 +4128,7 @@ class SessionManagerPage(QtWidgets.QWidget):
 
         self.search_hint = QtWidgets.QLabel("高级语法：空格分词；模式选 AND/OR；包含“|”强制 OR")
         self.search_hint.setWordWrap(True)
-        self.search_hint.setStyleSheet(MUTED_LABEL_STYLE)
+        set_label_tone(self.search_hint, "muted")
         left_layout.addWidget(self.search_hint)
 
         left_layout.addSpacing(20)
@@ -4018,7 +4140,7 @@ class SessionManagerPage(QtWidgets.QWidget):
 
         self.search_status = QtWidgets.QLabel("")
         self.search_status.setWordWrap(True)
-        self.search_status.setStyleSheet(MUTED_LABEL_STYLE)
+        set_label_tone(self.search_status, "muted")
         left_layout.addWidget(self.search_status)
 
         progress_row = QtWidgets.QHBoxLayout()
@@ -4065,7 +4187,7 @@ class SessionManagerPage(QtWidgets.QWidget):
         self.only_ua_hint = QtWidgets.QLabel("不勾选：看“所有原始记录”，包括系统提示、开发者说明、工具响应等")
         self.only_ua_hint.setWordWrap(True)
         self.only_ua_hint.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
-        self.only_ua_hint.setStyleSheet(MUTED_LABEL_STYLE)
+        set_label_tone(self.only_ua_hint, "muted")
         right_layout.addWidget(self.only_ua_hint)
 
         self.detail_text = QtWidgets.QPlainTextEdit()
@@ -5065,11 +5187,11 @@ class OpenAIStatusPage(QtWidgets.QWidget):
         header = f"总体状态：{html.escape(str(desc))} ({html.escape(str(indicator))})"
 
         status_colors = {
-            "under_maintenance": COLOR_STATUS_INFO,
-            "degraded_performance": COLOR_STATUS_WARN,
-            "partial_outage": COLOR_STATUS_ALERT,
-            "major_outage": COLOR_STATUS_ERROR,
-            "unknown": COLOR_STATUS_UNKNOWN,
+            "under_maintenance": get_theme_colors()["status_info"],
+            "degraded_performance": get_theme_colors()["status_warn"],
+            "partial_outage": get_theme_colors()["status_alert"],
+            "major_outage": get_theme_colors()["status_error"],
+            "unknown": get_theme_colors()["status_unknown"],
         }
 
         abnormal: list[tuple[str, str]] = []
@@ -5087,7 +5209,7 @@ class OpenAIStatusPage(QtWidgets.QWidget):
             if raw_status == "operational":
                 normal.append(line)
             else:
-                color = status_colors.get(raw_status, COLOR_STATUS_ERROR)
+                color = status_colors.get(raw_status, get_theme_colors()["status_error"])
                 abnormal.append((line, color))
 
         html_lines = [header, ""]
@@ -5111,6 +5233,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(860, 620)
         self.setMinimumSize(860, 620)
         self.state = AppState()
+        app = QtWidgets.QApplication.instance()
+        if app is not None and normalize_theme_mode(app.property("themeMode")) != self.state.theme_mode:
+            apply_theme(app, self.state.theme_mode)
         central = QtWidgets.QWidget()
         central.setObjectName("appRoot")
         root = QtWidgets.QHBoxLayout(central)
@@ -5215,36 +5340,17 @@ def apply_material_theme(app: QtWidgets.QApplication) -> bool:
         return False
 
 
-def apply_light_theme(app: QtWidgets.QApplication) -> None:
-    app.setStyle("Fusion")
-    palette = QtGui.QPalette()
-    palette.setColor(QtGui.QPalette.Window, QtGui.QColor(COLOR_BG))
-    palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor(COLOR_TEXT))
-    palette.setColor(QtGui.QPalette.Base, QtGui.QColor(COLOR_SURFACE))
-    palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(COLOR_SURFACE_ALT))
-    palette.setColor(QtGui.QPalette.ToolTipBase, QtGui.QColor(COLOR_SURFACE))
-    palette.setColor(QtGui.QPalette.ToolTipText, QtGui.QColor(COLOR_TEXT))
-    palette.setColor(QtGui.QPalette.Text, QtGui.QColor(COLOR_TEXT))
-    palette.setColor(QtGui.QPalette.Button, QtGui.QColor(COLOR_SURFACE_ALT))
-    palette.setColor(QtGui.QPalette.ButtonText, QtGui.QColor(COLOR_TEXT))
-    palette.setColor(QtGui.QPalette.BrightText, QtGui.QColor(COLOR_WARNING))
-    palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(COLOR_ACCENT))
-    palette.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(COLOR_ACCENT_TEXT))
-    palette.setColor(QtGui.QPalette.Link, QtGui.QColor(COLOR_ACCENT))
-    palette.setColor(QtGui.QPalette.LinkVisited, QtGui.QColor(COLOR_ACCENT_HOVER))
-    app.setPalette(palette)
-
-    app.setStyleSheet(
-        f"""
+def _build_app_stylesheet(colors: Dict[str, object]) -> str:
+    return f"""
         QWidget {{
-            color: {COLOR_TEXT};
+            color: {colors['text']};
         }}
         QWidget#appRoot {{
-            background: {COLOR_BG};
+            background: {colors['bg']};
         }}
         QWidget#navPanel {{
-            background: {COLOR_PANEL};
-            border-right: 1px solid {COLOR_BORDER};
+            background: {colors['panel']};
+            border-right: 1px solid {colors['border']};
             border-top-left-radius: 10px;
             border-bottom-left-radius: 10px;
         }}
@@ -5252,60 +5358,92 @@ def apply_light_theme(app: QtWidgets.QApplication) -> None:
             background: transparent;
         }}
         QLabel {{
-            color: {COLOR_TEXT};
+            color: {colors['text']};
+        }}
+        QLabel[tone="muted"] {{
+            color: {colors['muted']};
+        }}
+        QLabel[warningBadge="true"] {{
+            color: {colors['warning']};
+            background-color: {colors['warning_bg']};
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
         }}
         QGroupBox {{
-            border: 1px solid {COLOR_BORDER};
+            border: 1px solid {colors['border']};
             border-radius: 10px;
             margin-top: 12px;
             padding-top: 8px;
-            background-color: {COLOR_SURFACE};
+            background-color: {colors['surface']};
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
             subcontrol-position: top left;
             left: 10px;
             padding: 0 6px;
-            color: {COLOR_TEXT};
-            background: {COLOR_SURFACE};
+            color: {colors['text']};
+            background: {colors['surface']};
             font-weight: 600;
         }}
         QLineEdit, QPlainTextEdit, QTextEdit, QListWidget, QTableWidget, QComboBox, QSpinBox, QDateEdit {{
-            border: 1px solid {COLOR_BORDER};
+            border: 1px solid {colors['border']};
             border-radius: 8px;
-            background: {COLOR_SURFACE};
-            color: {COLOR_TEXT};
-            selection-background-color: {COLOR_ACCENT};
-            selection-color: {COLOR_ACCENT_TEXT};
+            background: {colors['surface']};
+            color: {colors['text']};
+            selection-background-color: {colors['accent']};
+            selection-color: {colors['accent_text']};
         }}
         QLineEdit, QComboBox, QSpinBox, QDateEdit {{
-            padding: 4px 8px;
+            padding: 4px 30px 4px 8px;
             min-height: 18px;
         }}
+        QComboBox::drop-down {{
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 22px;
+            border: none;
+            background: transparent;
+        }}
+        QComboBox#themeCombo {{
+            padding: 3px 10px 3px 10px;
+            min-width: 0px;
+        }}
+        QComboBox#themeCombo::drop-down {{
+            width: 0px;
+            border: none;
+            background: transparent;
+        }}
+        QComboBox#themeCombo::down-arrow {{
+            image: none;
+            width: 0px;
+            height: 0px;
+            border: none;
+        }}
         QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QListWidget:focus, QTableWidget:focus, QComboBox:focus, QSpinBox:focus, QDateEdit:focus {{
-            border: 1px solid {COLOR_ACCENT};
+            border: 1px solid {colors['accent']};
         }}
         QPushButton {{
-            background: {COLOR_SURFACE_ALT};
-            border: 1px solid {COLOR_BORDER};
+            background: {colors['surface_alt']};
+            border: 1px solid {colors['border']};
             border-radius: 8px;
             padding: 5px 12px;
-            color: {COLOR_TEXT};
+            color: {colors['text']};
         }}
         QPushButton:hover {{
-            border: 1px solid {COLOR_ACCENT};
-            background: {COLOR_ACCENT_SOFT};
+            border: 1px solid {colors['accent']};
+            background: {colors['accent_soft']};
         }}
         QPushButton:checked {{
-            background: {COLOR_ACCENT};
-            border: 1px solid {COLOR_ACCENT};
-            color: {COLOR_ACCENT_TEXT};
+            background: {colors['accent']};
+            border: 1px solid {colors['accent']};
+            color: {colors['accent_text']};
             font-weight: 600;
         }}
         QPushButton:disabled {{
-            color: {COLOR_MUTED};
-            background: {COLOR_PANEL};
-            border: 1px solid {COLOR_BORDER};
+            color: {colors['muted']};
+            background: {colors['panel']};
+            border: 1px solid {colors['border']};
         }}
         QPushButton[navButton="true"] {{
             text-align: left;
@@ -5313,41 +5451,84 @@ def apply_light_theme(app: QtWidgets.QApplication) -> None:
             font-weight: 600;
         }}
         QPushButton[navButton="true"]:hover:!checked {{
-            background: {COLOR_SURFACE};
-            border: 1px solid {COLOR_BORDER_STRONG};
+            background: {colors['surface']};
+            border: 1px solid {colors['border_strong']};
         }}
         QAbstractItemView {{
-            background: {COLOR_SURFACE};
-            alternate-background-color: {COLOR_SURFACE_ALT};
-            color: {COLOR_TEXT};
-            selection-background-color: {COLOR_ACCENT};
-            selection-color: {COLOR_ACCENT_TEXT};
+            background: {colors['surface']};
+            alternate-background-color: {colors['surface_alt']};
+            color: {colors['text']};
+            selection-background-color: {colors['accent']};
+            selection-color: {colors['accent_text']};
         }}
         QHeaderView::section {{
-            background-color: {COLOR_SURFACE_ALT};
-            border: 1px solid {COLOR_BORDER};
+            background-color: {colors['surface_alt']};
+            border: 1px solid {colors['border']};
             padding: 4px 6px;
-            color: {COLOR_MUTED};
+            color: {colors['muted']};
             font-weight: 600;
         }}
         QProgressBar {{
-            border: 1px solid {COLOR_BORDER};
+            border: 1px solid {colors['border']};
             border-radius: 6px;
-            background: {COLOR_SURFACE};
-            color: {COLOR_TEXT};
+            background: {colors['surface']};
+            color: {colors['text']};
             text-align: center;
         }}
         QProgressBar::chunk {{
-            background: {COLOR_ACCENT};
+            background: {colors['accent']};
             border-radius: 5px;
         }}
 """
-    )
+
+
+def _refresh_theme_decorations(app: QtWidgets.QApplication) -> None:
+    for root in app.topLevelWidgets():
+        widgets = [root] + root.findChildren(QtWidgets.QWidget)
+        for widget in widgets:
+            if widget.property("usesCardShadow"):
+                apply_white_shadow(widget)
+            if widget.property("tone") is not None or widget.property("warningBadge") is not None:
+                _refresh_widget_style(widget)
+
+
+def apply_theme(app: QtWidgets.QApplication, mode: object) -> None:
+    mode = normalize_theme_mode(mode)
+    colors = get_theme_colors(mode)
+    app.setStyle("Fusion")
+    app.setProperty("themeMode", mode)
+    palette = QtGui.QPalette()
+    palette.setColor(QtGui.QPalette.Window, QtGui.QColor(colors["bg"]))
+    palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor(colors["text"]))
+    palette.setColor(QtGui.QPalette.Base, QtGui.QColor(colors["surface"]))
+    palette.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(colors["surface_alt"]))
+    palette.setColor(QtGui.QPalette.ToolTipBase, QtGui.QColor(colors["surface"]))
+    palette.setColor(QtGui.QPalette.ToolTipText, QtGui.QColor(colors["text"]))
+    palette.setColor(QtGui.QPalette.Text, QtGui.QColor(colors["text"]))
+    palette.setColor(QtGui.QPalette.Button, QtGui.QColor(colors["surface_alt"]))
+    palette.setColor(QtGui.QPalette.ButtonText, QtGui.QColor(colors["text"]))
+    palette.setColor(QtGui.QPalette.BrightText, QtGui.QColor(colors["warning"]))
+    palette.setColor(QtGui.QPalette.Highlight, QtGui.QColor(colors["accent"]))
+    palette.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(colors["accent_text"]))
+    palette.setColor(QtGui.QPalette.Link, QtGui.QColor(colors["accent"]))
+    palette.setColor(QtGui.QPalette.LinkVisited, QtGui.QColor(colors["accent_hover"]))
+    app.setPalette(palette)
+    app.setStyleSheet(_build_app_stylesheet(colors))
+    _refresh_theme_decorations(app)
+
+
+def apply_light_theme(app: QtWidgets.QApplication) -> None:
+    apply_theme(app, "light")
+
+
+def apply_dark_theme(app: QtWidgets.QApplication) -> None:
+    apply_theme(app, "dark")
 
 
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
-    apply_light_theme(app)
+    initial_store = load_store()
+    apply_theme(app, initial_store.get("theme_mode"))
     icon_path = resolve_asset("icon_tray.png")
     if icon_path.exists():
         app.setWindowIcon(QtGui.QIcon(str(icon_path)))
