@@ -51,6 +51,7 @@ from codex_switcher import (
     LOG_PATH,
     post_json,
     save_store,
+    safe_write_text,
     set_active_account,
     upsert_account,
 )
@@ -132,6 +133,27 @@ def run_in_ui(fn) -> None:
         fn()
         return
     QtCore.QTimer.singleShot(0, app, fn)
+
+
+def get_userprofile_dir() -> Path:
+    env_profile = os.environ.get("USERPROFILE")
+    if env_profile:
+        return Path(env_profile)
+    return Path.home()
+
+
+def get_codex_root_dir(userprofile: Optional[Path] = None) -> Path:
+    base = userprofile or get_userprofile_dir()
+    return base / ".codex"
+
+
+def get_codex_config_path(userprofile: Optional[Path] = None) -> Path:
+    return get_codex_root_dir(userprofile) / "config.toml"
+
+
+def get_codex_config_switch_dir(userprofile: Optional[Path] = None) -> Path:
+    base = userprofile or get_userprofile_dir()
+    return base / ".codex-config-switch"
 
 
 def message_info(parent: QtWidgets.QWidget, title: str, text: str) -> None:
@@ -2015,20 +2037,16 @@ class ConfigTomlPage(QtWidgets.QWidget):
 
     def _compute_config_path(self) -> tuple[Optional[Path], str, Optional[str]]:
         exe_path = self.state.codex_path
-        if not exe_path:
-            return None, "未检测到本机 codex 路径，请先在“Codex 状态”页刷新检测", None
-        userprofile = self._infer_userprofile_from_exe(exe_path)
+        userprofile = self._infer_userprofile_from_exe(exe_path) if exe_path else None
         if userprofile:
             hint = f"根据 codex 路径推断用户目录：{userprofile}"
         else:
-            env_profile = os.environ.get("USERPROFILE")
-            if env_profile:
-                userprofile = Path(env_profile)
+            userprofile = get_userprofile_dir()
+            if exe_path:
                 hint = f"未能从 codex 路径推断用户目录，使用 USERPROFILE：{userprofile}"
             else:
-                userprofile = Path.home()
-                hint = f"未能从 codex 路径推断用户目录，使用 Path.home()：{userprofile}"
-        config_path = userprofile / ".codex" / "config.toml"
+                hint = f"未检测到本机 codex 路径，使用 USERPROFILE：{userprofile}"
+        config_path = get_codex_config_path(userprofile)
         return config_path, hint, exe_path
 
     def _resolve_config_path(self) -> tuple[Optional[Path], str]:
@@ -2115,13 +2133,370 @@ class ConfigTomlPage(QtWidgets.QWidget):
             message_warn(self, "提示", hint)
             return
         try:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
             content = self.editor.toPlainText()
-            config_path.write_text(content, encoding="utf-8")
+            safe_write_text(config_path, content, encoding="utf-8")
             self.status_label.setText(f"已保存：{config_path}")
         except Exception as exc:
             message_error(self, "失败", str(exc))
             self.status_label.setText(f"保存失败：{exc}")
+
+
+class ConfigSwitchPage(QtWidgets.QWidget):
+    def __init__(self, state: AppState) -> None:
+        super().__init__()
+        self.state = state
+        self.switch_dir = get_codex_config_switch_dir()
+        self.target_path = get_codex_config_path()
+        self.selected_path: Optional[Path] = None
+
+        layout = QtWidgets.QVBoxLayout(self)
+        header = QtWidgets.QLabel("config.toml 切换")
+        header.setFont(self._header_font())
+        layout.addWidget(header)
+
+        info_group = QtWidgets.QGroupBox("目录信息")
+        apply_white_shadow(info_group)
+        info_layout = QtWidgets.QVBoxLayout(info_group)
+        self.switch_dir_label = QtWidgets.QLabel("配置库目录：-")
+        self.target_path_label = QtWidgets.QLabel("目标 config.toml：-")
+        self.current_label = QtWidgets.QLabel("当前选中：-")
+        info_layout.addWidget(self.switch_dir_label)
+        info_layout.addWidget(self.target_path_label)
+        info_layout.addWidget(self.current_label)
+        layout.addWidget(info_group)
+
+        action_row = QtWidgets.QHBoxLayout()
+        self.refresh_btn = QtWidgets.QPushButton("刷新列表")
+        self.refresh_btn.clicked.connect(self.refresh_list)
+        self.apply_btn = QtWidgets.QPushButton("切换配置")
+        self.apply_btn.clicked.connect(self.apply_selected)
+        self.save_current_btn = QtWidgets.QPushButton("保存配置")
+        self.save_current_btn.clicked.connect(self.save_current_to_library)
+        self.open_switch_dir_btn = QtWidgets.QPushButton("打开配置库目录")
+        self.open_switch_dir_btn.clicked.connect(self.open_switch_dir)
+        self.open_target_dir_btn = QtWidgets.QPushButton("打开配置文件目录")
+        self.open_target_dir_btn.clicked.connect(self.open_target_dir)
+        action_row.addWidget(self.refresh_btn)
+        action_row.addWidget(self.apply_btn)
+        action_row.addWidget(self.save_current_btn)
+        action_row.addWidget(self.open_switch_dir_btn)
+        action_row.addWidget(self.open_target_dir_btn)
+        action_row.addStretch(1)
+        self.delete_btn = QtWidgets.QPushButton("删除配置")
+        self.delete_btn.clicked.connect(self.delete_selected)
+        action_row.addWidget(self.delete_btn)
+        layout.addLayout(action_row)
+
+        body = QtWidgets.QHBoxLayout()
+        layout.addLayout(body, 1)
+
+        list_group = QtWidgets.QGroupBox("配置库中的 TOML 文件")
+        apply_white_shadow(list_group)
+        list_layout = QtWidgets.QVBoxLayout(list_group)
+        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget.currentRowChanged.connect(self.on_select)
+        self.list_widget.itemDoubleClicked.connect(lambda _item: self.apply_selected())
+        list_layout.addWidget(self.list_widget)
+        body.addWidget(list_group, 1)
+
+        preview_group = QtWidgets.QGroupBox("预览")
+        apply_white_shadow(preview_group)
+        preview_layout = QtWidgets.QVBoxLayout(preview_group)
+        self.preview_meta_label = QtWidgets.QLabel("文件信息：-")
+        self.preview_editor = QtWidgets.QPlainTextEdit()
+        self.preview_editor.setReadOnly(True)
+        preview_layout.addWidget(self.preview_meta_label)
+        preview_layout.addWidget(self.preview_editor, 1)
+        body.addWidget(preview_group, 2)
+
+        hint_group = QtWidgets.QGroupBox("说明")
+        apply_white_shadow(hint_group)
+        hint_layout = QtWidgets.QVBoxLayout(hint_group)
+        hint_label = QtWidgets.QLabel(
+            '<ul style="margin:0 0 0 14px; padding:0; line-height:1.6;">'
+            '<li>请把需要切换的多个 `.toml` 文件放到 `%USERPROFILE%\\.codex-config-switch\\`。</li>'
+            '<li>点击“切换到选中配置”后，会用选中的文件内容直接覆盖 `%USERPROFILE%\\.codex\\config.toml`。</li>'
+            '<li>点击“保存当前配置到配置库”后，可把当前 `%USERPROFILE%\\.codex\\config.toml` 另存到配置库。</li>'
+            '<li>点击右侧“删除配置”后，可从配置库删除选中的 `.toml` 文件，不会影响当前已生效的 `%USERPROFILE%\\.codex\\config.toml`。</li>'
+            '<li>列表里带“[当前生效]”的文件，表示它与当前 `%USERPROFILE%\\.codex\\config.toml` 内容一致。</li>'
+            '</ul>'
+        )
+        hint_label.setTextFormat(QtCore.Qt.RichText)
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet(MUTED_LABEL_STYLE)
+        hint_layout.addWidget(hint_label)
+        layout.addWidget(hint_group)
+
+        self.status_label = QtWidgets.QLabel("")
+        layout.addWidget(self.status_label)
+
+    def _header_font(self) -> QtGui.QFont:
+        font = QtGui.QFont("Segoe UI", 12)
+        font.setBold(True)
+        return font
+
+    def on_show(self) -> None:
+        self.refresh_list()
+
+    def _reset_preview(self) -> None:
+        self.selected_path = None
+        self.current_label.setText("当前选中：-")
+        self.preview_meta_label.setText("文件信息：-")
+        self.preview_editor.setPlainText("")
+        self.apply_btn.setEnabled(False)
+        self.delete_btn.setEnabled(False)
+
+    def refresh_list(self) -> None:
+        self.switch_dir = get_codex_config_switch_dir()
+        self.target_path = get_codex_config_path()
+        self.switch_dir_label.setText(f"配置库目录：{self.switch_dir}")
+        self.target_path_label.setText(f"目标 config.toml：{self.target_path}")
+        self.list_widget.clear()
+        self._reset_preview()
+
+        created = False
+        try:
+            if not self.switch_dir.exists():
+                self.switch_dir.mkdir(parents=True, exist_ok=True)
+                created = True
+        except Exception as exc:
+            self.status_label.setText(f"无法创建配置库目录：{exc}")
+            return
+
+        files = sorted(
+            [path for path in self.switch_dir.iterdir() if path.is_file() and path.suffix.lower() == ".toml"],
+            key=lambda path: path.name.lower(),
+        )
+
+        target_text: Optional[str] = None
+        if self.target_path.exists():
+            try:
+                target_text = self.target_path.read_text(encoding="utf-8")
+            except Exception:
+                target_text = None
+
+        selected_row = -1
+        for idx, path in enumerate(files):
+            label = path.name
+            if target_text is not None:
+                try:
+                    if path.read_text(encoding="utf-8") == target_text:
+                        label = f"{label} [当前生效]"
+                        if selected_row < 0:
+                            selected_row = idx
+                except Exception:
+                    pass
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(QtCore.Qt.UserRole, path)
+            self.list_widget.addItem(item)
+
+        if not files:
+            if created:
+                self.status_label.setText(f"已创建目录：{self.switch_dir}，请先放入 .toml 配置文件。")
+            else:
+                self.status_label.setText(f"目录中暂无 .toml 配置文件：{self.switch_dir}")
+            return
+
+        if selected_row < 0:
+            selected_row = 0
+        self.list_widget.setCurrentRow(selected_row)
+        self.status_label.setText(f"共找到 {len(files)} 个可切换配置文件。")
+
+    def on_select(self, row: int) -> None:
+        if row < 0:
+            self._reset_preview()
+            return
+        item = self.list_widget.item(row)
+        if item is None:
+            self._reset_preview()
+            return
+        path = item.data(QtCore.Qt.UserRole)
+        if not isinstance(path, Path):
+            self._reset_preview()
+            return
+
+        self.selected_path = path
+        self.current_label.setText(f"当前选中：{path.name}")
+        self.apply_btn.setEnabled(True)
+        self.delete_btn.setEnabled(True)
+        try:
+            content = path.read_text(encoding="utf-8")
+            stat = path.stat()
+            self.preview_meta_label.setText(
+                f"文件信息：{path} | {stat.st_size} 字节 | 修改时间 {datetime.fromtimestamp(stat.st_mtime):%Y-%m-%d %H:%M:%S}"
+            )
+            self.preview_editor.setPlainText(content)
+            self.status_label.setText(f"已加载：{path.name}")
+        except Exception as exc:
+            self.preview_meta_label.setText(f"文件信息：{path}")
+            self.preview_editor.setPlainText("")
+            self.status_label.setText(f"读取失败：{exc}")
+
+    def open_switch_dir(self) -> None:
+        try:
+            self.switch_dir.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(self.switch_dir))
+        except Exception as exc:
+            message_error(self, "失败", str(exc))
+
+    def open_target_dir(self) -> None:
+        try:
+            self.target_path.parent.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(self.target_path.parent))
+        except Exception as exc:
+            message_error(self, "失败", str(exc))
+
+    def _select_item_by_name(self, file_name: str) -> None:
+        for row in range(self.list_widget.count()):
+            item = self.list_widget.item(row)
+            if item is None:
+                continue
+            path = item.data(QtCore.Qt.UserRole)
+            if isinstance(path, Path) and path.name == file_name:
+                self.list_widget.setCurrentRow(row)
+                return
+
+    def save_current_to_library(self) -> None:
+        if not self.target_path.exists():
+            message_warn(self, "提示", f"当前目标文件不存在：{self.target_path}")
+            return
+
+        try:
+            current_text = self.target_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            message_error(self, "失败", f"读取当前 config.toml 失败：{exc}")
+            return
+
+        try:
+            self.switch_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            message_error(self, "失败", f"无法创建配置库目录：{exc}")
+            return
+
+        default_name = self.selected_path.name if self.selected_path else f"config_{datetime.now():%Y%m%d_%H%M%S}.toml"
+        file_name, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "保存到配置库",
+            "请输入配置文件名（支持 .toml）：",
+            QtWidgets.QLineEdit.Normal,
+            default_name,
+        )
+        if not ok:
+            return
+
+        file_name = file_name.strip()
+        if not file_name:
+            message_warn(self, "提示", "文件名不能为空")
+            return
+
+        normalized_name = Path(file_name).name
+        if normalized_name != file_name:
+            message_warn(self, "提示", "文件名不能包含路径")
+            return
+        if not normalized_name.lower().endswith(".toml"):
+            normalized_name += ".toml"
+
+        dest_path = self.switch_dir / normalized_name
+        if dest_path.resolve() == self.target_path.resolve():
+            message_warn(self, "提示", "不能直接覆盖当前生效的目标 config.toml")
+            return
+
+        if dest_path.exists():
+            try:
+                existing_text = dest_path.read_text(encoding="utf-8")
+            except Exception:
+                existing_text = None
+            if existing_text == current_text:
+                self.status_label.setText(f"配置库中已存在同内容文件：{normalized_name}")
+                self.refresh_list()
+                self._select_item_by_name(normalized_name)
+                message_info(self, "提示", f"{normalized_name} 已存在且内容相同")
+                return
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "确认覆盖",
+                f"{normalized_name} 已存在，是否覆盖？",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+
+        try:
+            safe_write_text(dest_path, current_text, encoding="utf-8")
+            self.status_label.setText(f"已保存当前配置到配置库：{normalized_name}")
+            self.refresh_list()
+            self._select_item_by_name(normalized_name)
+            message_info(self, "完成", f"已保存到 {dest_path}")
+        except Exception as exc:
+            self.status_label.setText(f"保存失败：{exc}")
+            message_error(self, "失败", str(exc))
+
+    def delete_selected(self) -> None:
+        source_path = self.selected_path
+        if not source_path:
+            message_warn(self, "提示", "请先选择一个配置文件")
+            return
+        if not source_path.exists():
+            self.status_label.setText(f"文件不存在：{source_path.name}")
+            self.refresh_list()
+            return
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "确认删除",
+            f"确认从配置库删除\n{source_path.name}\n吗？\n\n这不会影响当前已生效的 config.toml。",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            source_path.unlink()
+            self.status_label.setText(f"已删除配置：{source_path.name}")
+            self.refresh_list()
+            message_info(self, "完成", f"已删除 {source_path.name}")
+        except Exception as exc:
+            self.status_label.setText(f"删除失败：{exc}")
+            message_error(self, "失败", str(exc))
+
+    def apply_selected(self) -> None:
+        source_path = self.selected_path
+        if not source_path:
+            message_warn(self, "提示", "请先选择一个配置文件")
+            return
+        try:
+            source_text = source_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            message_error(self, "失败", f"读取源文件失败：{exc}")
+            return
+
+        try:
+            current_text = self.target_path.read_text(encoding="utf-8") if self.target_path.exists() else None
+        except Exception:
+            current_text = None
+
+        if current_text == source_text:
+            self.status_label.setText(f"当前已是该配置：{source_path.name}")
+            message_info(self, "提示", f"{source_path.name} 已经是当前生效配置")
+            return
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "确认切换",
+            f"确认用 {source_path.name} 覆盖\n{self.target_path}\n吗？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            safe_write_text(self.target_path, source_text, encoding="utf-8")
+            self.status_label.setText(f"已切换到：{source_path.name}")
+            message_info(self, "完成", f"已用 {source_path.name} 覆盖 {self.target_path.name}")
+            self.refresh_list()
+        except Exception as exc:
+            self.status_label.setText(f"切换失败：{exc}")
+            message_error(self, "失败", str(exc))
 
 
 class OpencodeConfigPage(QtWidgets.QWidget):
@@ -4755,6 +5130,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pages["account"] = AccountPage(self.state)
         if hasattr(self.pages["account"], "refresh_pages"):
             self.pages["account"].refresh_pages = self.refresh_pages
+        self.pages["config_switch"] = ConfigSwitchPage(self.state)
         self.pages["config_toml"] = ConfigTomlPage(self.state)
         self.pages["opencode"] = OpencodeConfigPage(self.state)
         self.pages["network"] = NetworkDiagnosticsPage(self.state)
@@ -4764,12 +5140,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pages["settings"] = SettingsPage(self.state)
         self.pages["openai_status"] = OpenAIStatusPage(self.state)
         self.pages["sessions"] = SessionManagerPage(self.state)
+        self.last_page_key: Optional[str] = None
 
         for page in self.pages.values():
             self.stack.addWidget(page)
 
         self.buttons = []
         self._add_nav_button(nav, "Codex CLI状态", "codex_status")
+        self._add_nav_button(nav, "config切换", "config_switch")
         self._add_nav_button(nav, "config.toml配置", "config_toml")
         self._add_nav_button(nav, "opencode 配置", "opencode")
         self._add_nav_button(nav, "多账号切换", "account")
@@ -4781,7 +5159,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_nav_button(nav, "检查更新", "settings")
         nav.addStretch(1)
 
-        self.show_page("account")
+        initial_key = self._initial_page_key()
+        self.show_page(initial_key)
+
+    def _initial_page_key(self) -> str:
+        saved_key = self.state.store.get("last_page")
+        if isinstance(saved_key, str) and saved_key in self.pages:
+            return saved_key
+        if self.buttons:
+            return self.buttons[0][0]
+        return "codex_status"
+
+    def _remember_current_page(self, key: str) -> None:
+        if self.last_page_key == key:
+            return
+        self.last_page_key = key
+        self.state.store["last_page"] = key
+        try:
+            save_store(self.state.store)
+        except Exception:
+            pass
 
     def _add_nav_button(self, layout: QtWidgets.QVBoxLayout, label: str, key: str) -> None:
         btn = QtWidgets.QPushButton(label)
@@ -4796,6 +5193,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not page:
             return
         self.stack.setCurrentWidget(page)
+        self._remember_current_page(key)
         for k, btn in self.buttons:
             btn.setChecked(k == key)
         if hasattr(page, "on_show"):
