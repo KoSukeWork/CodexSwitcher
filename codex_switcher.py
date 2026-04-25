@@ -12,12 +12,13 @@ import shutil
 import stat
 import subprocess
 import time
+import tomllib
 import traceback
 import zipfile
 from datetime import datetime
 from itertools import zip_longest
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -46,6 +47,382 @@ PING_TIMEOUT_MS = 1000
 HTTP_TIMEOUT = 3.0
 
 PING_REGEX = re.compile(r"(?:time|时间)[=<]?\s*(\d+)\s*ms", re.IGNORECASE)
+
+
+class _TomlEntry(NamedTuple):
+    full_key: Tuple[str, ...]
+    section: Tuple[str, ...]
+    key_parts: Tuple[str, ...]
+    start: int
+    end: int
+    equals_index: int
+    lines: List[str]
+
+
+class _TomlSectionHeader(NamedTuple):
+    path: Tuple[str, ...]
+    start: int
+    line: str
+    is_array: bool
+
+
+class _TomlScan(NamedTuple):
+    lines: List[str]
+    entries: List[_TomlEntry]
+    headers: List[_TomlSectionHeader]
+
+
+def _detect_line_ending(text: str) -> str:
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def _normalize_line_endings(text: str, line_ending: str) -> str:
+    return re.sub(r"\r\n|\r|\n", line_ending, text)
+
+
+def _parse_toml_key(key_text: str) -> Tuple[str, ...]:
+    parts: List[str] = []
+    idx = 0
+    length = len(key_text)
+    while idx < length:
+        while idx < length and key_text[idx].isspace():
+            idx += 1
+        if idx >= length:
+            break
+        if key_text[idx] in ("'", '"'):
+            quote = key_text[idx]
+            start = idx
+            idx += 1
+            while idx < length:
+                if quote == '"' and key_text[idx] == "\\":
+                    idx += 2
+                    continue
+                if key_text[idx] == quote:
+                    idx += 1
+                    break
+                idx += 1
+            raw = key_text[start:idx].strip()
+        else:
+            start = idx
+            while idx < length and key_text[idx] != ".":
+                idx += 1
+            raw = key_text[start:idx].strip()
+        if raw:
+            parts.append(_decode_toml_key_part(raw))
+        while idx < length and key_text[idx].isspace():
+            idx += 1
+        if idx < length and key_text[idx] == ".":
+            idx += 1
+            continue
+        break
+    return tuple(part for part in parts if part)
+
+
+def _decode_toml_key_part(raw: str) -> str:
+    if raw.startswith(("'", '"')):
+        try:
+            data = tomllib.loads(f"{raw} = 0")
+            return str(next(iter(data.keys())))
+        except Exception:
+            return raw.strip("'\"")
+    return raw
+
+
+def _format_toml_key(parts: Tuple[str, ...]) -> str:
+    return ".".join(_format_toml_key_part(part) for part in parts)
+
+
+def _format_toml_key_part(part: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_-]+", part):
+        return part
+    escaped = part.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _find_toml_assignment_equals(line: str) -> int:
+    quote: Optional[str] = None
+    idx = 0
+    while idx < len(line):
+        char = line[idx]
+        if quote is not None:
+            if quote == '"' and char == "\\":
+                idx += 2
+                continue
+            if char == quote:
+                quote = None
+        else:
+            if char == "#":
+                return -1
+            if char in ("'", '"'):
+                quote = char
+            elif char == "=":
+                return idx
+        idx += 1
+    return -1
+
+
+def _parse_toml_table_header(line: str) -> Optional[Tuple[Tuple[str, ...], bool]]:
+    stripped = line.lstrip()
+    if stripped.startswith("[["):
+        close = "]]"
+        start = 2
+        is_array = True
+    elif stripped.startswith("["):
+        close = "]"
+        start = 1
+        is_array = False
+    else:
+        return None
+
+    quote: Optional[str] = None
+    idx = start
+    while idx < len(stripped):
+        char = stripped[idx]
+        if quote is not None:
+            if quote == '"' and char == "\\":
+                idx += 2
+                continue
+            if char == quote:
+                quote = None
+        else:
+            if char in ("'", '"'):
+                quote = char
+            elif stripped.startswith(close, idx):
+                after = stripped[idx + len(close) :].strip()
+                if after and not after.startswith("#"):
+                    return None
+                key = stripped[start:idx].strip()
+                parts = _parse_toml_key(key)
+                return (parts, is_array) if parts else None
+        idx += 1
+    return None
+
+
+def _toml_value_fragment_parses(fragment: str) -> bool:
+    try:
+        tomllib.loads(f"__codex_switcher_value = {fragment}")
+        return True
+    except tomllib.TOMLDecodeError:
+        return False
+
+
+def _find_toml_entry_end(lines: List[str], start: int, equals_index: int) -> int:
+    fragment = lines[start][equals_index + 1 :]
+    for end in range(start + 1, len(lines) + 1):
+        if _toml_value_fragment_parses(fragment):
+            return end
+        if end < len(lines):
+            fragment += lines[end]
+    return start + 1
+
+
+def _scan_toml(text: str) -> _TomlScan:
+    lines = text.splitlines(keepends=True)
+    entries: List[_TomlEntry] = []
+    headers: List[_TomlSectionHeader] = []
+    current_section: Tuple[str, ...] = ()
+    idx = 0
+
+    while idx < len(lines):
+        header = _parse_toml_table_header(lines[idx])
+        if header is not None:
+            current_section, is_array = header
+            headers.append(_TomlSectionHeader(current_section, idx, lines[idx], is_array))
+            idx += 1
+            continue
+
+        equals_index = _find_toml_assignment_equals(lines[idx])
+        if equals_index >= 0:
+            key_text = lines[idx][:equals_index].strip()
+            key_parts = _parse_toml_key(key_text)
+            if key_parts:
+                end = _find_toml_entry_end(lines, idx, equals_index)
+                entries.append(
+                    _TomlEntry(
+                        current_section + key_parts,
+                        current_section,
+                        key_parts,
+                        idx,
+                        end,
+                        equals_index,
+                        lines[idx:end],
+                    )
+                )
+                idx = end
+                continue
+        idx += 1
+
+    return _TomlScan(lines, entries, headers)
+
+
+def _toml_section_ranges(scan: _TomlScan) -> Dict[Tuple[str, ...], Tuple[int, int, str]]:
+    ranges: Dict[Tuple[str, ...], Tuple[int, int, str]] = {}
+    headers = scan.headers
+    for idx, header in enumerate(headers):
+        if header.is_array:
+            continue
+        end = headers[idx + 1].start if idx + 1 < len(headers) else len(scan.lines)
+        ranges.setdefault(header.path, (header.start + 1, end, header.line))
+    return ranges
+
+
+def _toml_top_level_insert_at(scan: _TomlScan) -> int:
+    return scan.headers[0].start if scan.headers else len(scan.lines)
+
+
+def _toml_source_section_headers(scan: _TomlScan) -> Dict[Tuple[str, ...], str]:
+    result: Dict[Tuple[str, ...], str] = {}
+    for header in scan.headers:
+        if not header.is_array:
+            result.setdefault(header.path, header.line)
+    return result
+
+
+def _toml_value_fragment(entry: _TomlEntry) -> str:
+    return entry.lines[0][entry.equals_index + 1 :] + "".join(entry.lines[1:])
+
+
+def _entry_lines_with_key(entry: _TomlEntry, key_parts: Tuple[str, ...], line_ending: str) -> List[str]:
+    fragment = _normalize_line_endings(_toml_value_fragment(entry), line_ending)
+    if fragment and not fragment[0].isspace():
+        fragment = f" {fragment}"
+    text = f"{_format_toml_key(key_parts)} ={fragment}"
+    if not text.endswith(("\n", "\r")):
+        text += line_ending
+    return text.splitlines(keepends=True)
+
+
+def _replacement_lines(source: _TomlEntry, target: _TomlEntry, line_ending: str) -> List[str]:
+    prefix = target.lines[0][: target.equals_index + 1]
+    fragment = _normalize_line_endings(_toml_value_fragment(source), line_ending)
+    if fragment and not fragment[0].isspace():
+        fragment = f" {fragment}"
+    text = prefix + fragment
+    if not text.endswith(("\n", "\r")):
+        text += line_ending
+    return text.splitlines(keepends=True)
+
+
+def _normalize_toml_lines(lines: List[str], line_ending: str) -> List[str]:
+    text = _normalize_line_endings("".join(lines), line_ending)
+    if not text.endswith(("\n", "\r")):
+        text += line_ending
+    return text.splitlines(keepends=True)
+
+
+def _toml_insert_chunk(
+    lines: List[str],
+    insert_at: int,
+    entries: List[Tuple[_TomlEntry, Tuple[str, ...]]],
+    line_ending: str,
+) -> List[str]:
+    chunk: List[str] = []
+    if insert_at > 0 and lines[insert_at - 1].strip():
+        chunk.append(line_ending)
+    for entry, key_parts in entries:
+        chunk.extend(_entry_lines_with_key(entry, key_parts, line_ending))
+    if insert_at < len(lines) and lines[insert_at].strip():
+        chunk.append(line_ending)
+    return chunk
+
+
+def _longest_existing_section(
+    full_key: Tuple[str, ...], sections: Dict[Tuple[str, ...], Tuple[int, int, str]]
+) -> Tuple[str, ...]:
+    for length in range(len(full_key) - 1, 0, -1):
+        candidate = full_key[:length]
+        if candidate in sections:
+            return candidate
+    return ()
+
+
+def _validate_toml_text(text: str, label: str) -> None:
+    try:
+        tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"{label} 不是有效 TOML：{exc}") from exc
+
+
+def merge_config_toml_overlay(current_text: str, overlay_text: str) -> str:
+    """Apply keys from overlay_text to current_text without deleting other TOML keys."""
+    _validate_toml_text(overlay_text, "选中的配置文件")
+    if not current_text.strip():
+        return overlay_text
+    _validate_toml_text(current_text, "当前 config.toml")
+
+    current_scan = _scan_toml(current_text)
+    overlay_scan = _scan_toml(overlay_text)
+    if any(header.is_array for header in current_scan.headers + overlay_scan.headers):
+        raise ValueError("暂不支持合并包含 [[array-of-tables]] 的 TOML 配置")
+
+    line_ending = _detect_line_ending(current_text)
+    target_by_key = {entry.full_key: entry for entry in current_scan.entries}
+    updated_keys = set()
+    replacements: List[Tuple[int, int, List[str]]] = []
+
+    for source_entry in overlay_scan.entries:
+        target_entry = target_by_key.get(source_entry.full_key)
+        if target_entry is None:
+            continue
+        updated_keys.add(source_entry.full_key)
+        replacements.append(
+            (target_entry.start, target_entry.end, _replacement_lines(source_entry, target_entry, line_ending))
+        )
+
+    lines = list(current_scan.lines)
+    for start, end, new_lines in sorted(replacements, key=lambda item: item[0], reverse=True):
+        lines[start:end] = new_lines
+
+    merged_scan = _scan_toml("".join(lines))
+    sections = _toml_section_ranges(merged_scan)
+    source_headers = _toml_source_section_headers(overlay_scan)
+    missing_groups: Dict[Tuple[str, ...], List[Tuple[_TomlEntry, Tuple[str, ...]]]] = {}
+    section_order: List[Tuple[str, ...]] = []
+
+    for source_entry in overlay_scan.entries:
+        if source_entry.full_key in updated_keys:
+            continue
+        section = source_entry.section
+        key_parts = source_entry.key_parts
+        if not section:
+            existing_section = _longest_existing_section(source_entry.full_key, sections)
+            if existing_section:
+                section = existing_section
+                key_parts = source_entry.full_key[len(existing_section) :]
+        if section not in missing_groups:
+            missing_groups[section] = []
+            section_order.append(section)
+        missing_groups[section].append((source_entry, key_parts))
+
+    insertions: List[Tuple[int, List[str]]] = []
+    append_sections: List[Tuple[Tuple[str, ...], List[Tuple[_TomlEntry, Tuple[str, ...]]]]] = []
+    for section in section_order:
+        entries = missing_groups[section]
+        if not section:
+            insert_at = _toml_top_level_insert_at(merged_scan)
+            insertions.append((insert_at, _toml_insert_chunk(lines, insert_at, entries, line_ending)))
+        elif section in sections:
+            insert_at = sections[section][1]
+            insertions.append((insert_at, _toml_insert_chunk(lines, insert_at, entries, line_ending)))
+        else:
+            append_sections.append((section, entries))
+
+    for insert_at, chunk in sorted(insertions, key=lambda item: item[0], reverse=True):
+        lines[insert_at:insert_at] = chunk
+
+    for section, entries in append_sections:
+        if lines and lines[-1].strip():
+            lines.append(line_ending)
+        header = source_headers.get(section)
+        if header is None:
+            header = f"[{_format_toml_key(section)}]{line_ending}"
+        lines.extend(_normalize_toml_lines([header], line_ending))
+        for entry, key_parts in entries:
+            lines.extend(_entry_lines_with_key(entry, key_parts, line_ending))
+
+    merged_text = "".join(lines)
+    _validate_toml_text(merged_text, "合并后的 config.toml")
+    return merged_text
 
 def load_store() -> Dict[str, object]:
     if PROFILE_STORE.exists():

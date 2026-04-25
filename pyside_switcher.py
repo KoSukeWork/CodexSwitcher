@@ -46,6 +46,7 @@ from codex_switcher import (
     get_config_update_version_state,
     load_store,
     log_exception,
+    merge_config_toml_overlay,
     ping_average,
     apply_account_config,
     apply_env_for_account,
@@ -583,6 +584,7 @@ class AppState:
     def __init__(self) -> None:
         self.store = load_store()
         self.theme_mode = normalize_theme_mode(self.store.get("theme_mode"))
+        self.force_config_overwrite_once = False
         self.active_account = get_active_account(self.store)
         self.codex_path: Optional[str] = None
         self.codex_version: Optional[str] = None
@@ -2292,10 +2294,10 @@ class ConfigSwitchPage(QtWidgets.QWidget):
         hint_label = QtWidgets.QLabel(
             '<ul style="margin:0 0 0 14px; padding:0; line-height:1.6;">'
             '<li>请把需要切换的多个 `.toml` 文件放到 `%USERPROFILE%\\.codex-config-switch\\config_toml\\`。</li>'
-            '<li>点击“切换到选中配置”后，会用选中的文件内容直接覆盖 `%USERPROFILE%\\.codex\\config.toml`。</li>'
+            '<li>点击“切换配置”后，只会覆盖或新增选中配置里出现的字段，不会删除当前 `%USERPROFILE%\\.codex\\config.toml` 中的其他字段。</li>'
             '<li>点击“保存当前配置到配置库”后，可把当前 `%USERPROFILE%\\.codex\\config.toml` 另存到配置库。</li>'
             '<li>点击右侧“删除配置”后，可从配置库删除选中的 `.toml` 文件，不会影响当前已生效的 `%USERPROFILE%\\.codex\\config.toml`。</li>'
-            '<li>列表里带“[当前生效]”的文件，表示它与当前 `%USERPROFILE%\\.codex\\config.toml` 内容一致。</li>'
+            '<li>列表里带“[当前生效]”的文件，表示该配置中的字段已与当前 `%USERPROFILE%\\.codex\\config.toml` 一致。</li>'
             '</ul>'
         )
         hint_label.setTextFormat(QtCore.Qt.RichText)
@@ -2352,12 +2354,16 @@ class ConfigSwitchPage(QtWidgets.QWidget):
             except Exception:
                 target_text = None
 
+        force_overwrite = bool(self.state.force_config_overwrite_once)
         selected_row = -1
         for idx, path in enumerate(files):
             label = path.name
             if target_text is not None:
                 try:
-                    if path.read_text(encoding="utf-8") == target_text:
+                    source_text = path.read_text(encoding="utf-8")
+                    if source_text == target_text or (
+                        not force_overwrite and merge_config_toml_overlay(target_text, source_text) == target_text
+                    ):
                         label = f"{label} [当前生效]"
                         if selected_row < 0:
                             selected_row = idx
@@ -2549,10 +2555,46 @@ class ConfigSwitchPage(QtWidgets.QWidget):
 
         try:
             current_text = self.target_path.read_text(encoding="utf-8") if self.target_path.exists() else None
-        except Exception:
-            current_text = None
+        except Exception as exc:
+            if self.state.force_config_overwrite_once:
+                current_text = None
+            else:
+                message_error(self, "失败", f"读取当前 config.toml 失败，无法安全合并：{exc}")
+                return
 
-        if current_text == source_text:
+        if self.state.force_config_overwrite_once:
+            if current_text == source_text:
+                self.status_label.setText(f"当前已是该配置：{source_path.name}")
+                message_info(self, "提示", f"{source_path.name} 已经是当前生效配置")
+                return
+
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "确认强行覆盖",
+                f"确认用 {source_path.name} 直接覆盖\n{self.target_path}\n吗？\n\n"
+                "这会删除目标 config.toml 中未出现在选中文件里的字段，仅建议用于备选恢复。",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+
+            try:
+                safe_write_text(self.target_path, source_text, encoding="utf-8")
+                self.status_label.setText(f"已强行覆盖为：{source_path.name}")
+                message_info(self, "完成", f"已用 {source_path.name} 覆盖 {self.target_path.name}")
+                self.refresh_list()
+            except Exception as exc:
+                self.status_label.setText(f"切换失败：{exc}")
+                message_error(self, "失败", str(exc))
+            return
+
+        try:
+            merged_text = merge_config_toml_overlay(current_text or "", source_text)
+        except Exception as exc:
+            message_error(self, "失败", f"合并配置失败：{exc}")
+            return
+
+        if current_text == merged_text:
             self.status_label.setText(f"当前已是该配置：{source_path.name}")
             message_info(self, "提示", f"{source_path.name} 已经是当前生效配置")
             return
@@ -2560,16 +2602,16 @@ class ConfigSwitchPage(QtWidgets.QWidget):
         reply = QtWidgets.QMessageBox.question(
             self,
             "确认切换",
-            f"确认用 {source_path.name} 覆盖\n{self.target_path}\n吗？",
+            f"确认将 {source_path.name} 中的字段合并到\n{self.target_path}\n吗？\n\n未出现在选中配置中的现有字段会保留。",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if reply != QtWidgets.QMessageBox.Yes:
             return
 
         try:
-            safe_write_text(self.target_path, source_text, encoding="utf-8")
+            safe_write_text(self.target_path, merged_text, encoding="utf-8")
             self.status_label.setText(f"已切换到：{source_path.name}")
-            message_info(self, "完成", f"已用 {source_path.name} 覆盖 {self.target_path.name}")
+            message_info(self, "完成", f"已将 {source_path.name} 合并到 {self.target_path.name}")
             self.refresh_list()
         except Exception as exc:
             self.status_label.setText(f"切换失败：{exc}")
@@ -3437,6 +3479,18 @@ class SettingsPage(QtWidgets.QWidget):
         appearance_layout.addStretch(1)
         layout.addWidget(appearance_group)
 
+        config_switch_group = QtWidgets.QGroupBox("config 切换")
+        apply_white_shadow(config_switch_group)
+        config_switch_layout = QtWidgets.QVBoxLayout(config_switch_group)
+        self.force_config_overwrite_check = QtWidgets.QCheckBox("允许本次运行强行同步覆盖 config.toml")
+        self.force_config_overwrite_check.toggled.connect(self.on_force_config_overwrite_toggled)
+        self.force_config_overwrite_status = QtWidgets.QLabel("")
+        self.force_config_overwrite_status.setWordWrap(True)
+        set_label_tone(self.force_config_overwrite_status, "muted")
+        config_switch_layout.addWidget(self.force_config_overwrite_check)
+        config_switch_layout.addWidget(self.force_config_overwrite_status)
+        layout.addWidget(config_switch_group)
+
         update_group = QtWidgets.QGroupBox("配置压缩包更新")
         update_group.setAcceptDrops(True)
         update_group.installEventFilter(self)
@@ -3495,6 +3549,7 @@ class SettingsPage(QtWidgets.QWidget):
         layout.addStretch(1)
         self._update_theme_combo_width()
         self._sync_theme_combo()
+        self._sync_force_config_overwrite_check()
         self._sync_config_package_version()
 
     def _header_font(self) -> QtGui.QFont:
@@ -3504,6 +3559,7 @@ class SettingsPage(QtWidgets.QWidget):
 
     def on_show(self) -> None:
         self._sync_theme_combo()
+        self._sync_force_config_overwrite_check()
         self._sync_config_package_version()
         return
 
@@ -3552,6 +3608,20 @@ class SettingsPage(QtWidgets.QWidget):
         if app is not None:
             apply_theme(app, mode)
         self.theme_status.setText(f"当前：{'黑暗模式' if mode == 'dark' else '浅色模式'}（立即生效）")
+
+    def _sync_force_config_overwrite_check(self) -> None:
+        enabled = bool(self.state.force_config_overwrite_once)
+        self.force_config_overwrite_check.blockSignals(True)
+        self.force_config_overwrite_check.setChecked(enabled)
+        self.force_config_overwrite_check.blockSignals(False)
+        if enabled:
+            self.force_config_overwrite_status.setText("已启用：本次运行内 config 切换将直接用选中文件覆盖目标 config.toml。关闭软件后会恢复默认合并。")
+        else:
+            self.force_config_overwrite_status.setText("默认：config 切换只覆盖或新增选中配置里的字段，保留目标文件中的其他字段。")
+
+    def on_force_config_overwrite_toggled(self, checked: bool) -> None:
+        self.state.force_config_overwrite_once = bool(checked)
+        self._sync_force_config_overwrite_check()
 
     def _default_update_zip_help(self) -> str:
         return "\n".join(
