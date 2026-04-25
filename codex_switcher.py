@@ -13,12 +13,16 @@ import stat
 import subprocess
 import time
 import traceback
+import zipfile
 from datetime import datetime
-from pathlib import Path
+from itertools import zip_longest
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from urllib import error as urllib_error
 from urllib import request as urllib_request
+
+import yaml
 
 
 USERPROFILE_DIR = Path(os.environ.get("USERPROFILE") or Path.home())
@@ -663,5 +667,582 @@ def safe_write_text(path: Path, data: str, encoding: str = "utf-8") -> None:
             set_attrs = kernel32.SetFileAttributesW
             set_attrs.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
             set_attrs(str(path), original_attrs)
+
+
+def safe_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original_attrs = _clear_windows_attributes_temporarily(path)
+    try:
+        path.write_bytes(data)
+    finally:
+        if original_attrs is not None:
+            kernel32 = ctypes.windll.kernel32
+            set_attrs = kernel32.SetFileAttributesW
+            set_attrs.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+            set_attrs(str(path), original_attrs)
+
+
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(base.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+UPDATE_MANIFEST_NAMES = {
+    "codex_update.yml",
+    "codex_update.yaml",
+    "update.yml",
+    "update.yaml",
+}
+
+
+def _config_update_state_path(userprofile: Path) -> Path:
+    return userprofile / ".codex-config-switch" / "package_update_state.json"
+
+
+def _load_config_update_state(userprofile: Path) -> Dict[str, object]:
+    path = _config_update_state_path(userprofile)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def get_config_update_version_state(userprofile: Optional[Path] = None) -> Dict[str, object]:
+    base = userprofile or USERPROFILE_DIR
+    state = _load_config_update_state(base)
+    version = state.get("latest_version")
+    updated_at = state.get("updated_at")
+    manifest = state.get("latest_manifest")
+    zip_path = state.get("latest_zip_path")
+    return {
+        "version": str(version).strip() if isinstance(version, (str, int, float)) else "",
+        "updated_at": str(updated_at).strip() if isinstance(updated_at, str) else "",
+        "manifest": str(manifest).strip() if isinstance(manifest, str) else "",
+        "zip_path": str(zip_path).strip() if isinstance(zip_path, str) else "",
+        "state_path": str(_config_update_state_path(base)),
+    }
+
+
+def _save_config_update_state(userprofile: Path, data: Dict[str, object]) -> None:
+    safe_write_text(_config_update_state_path(userprofile), json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def _manifest_version(manifest: Dict[str, object]) -> str:
+    for key in ("version", "package_version", "update_version"):
+        value = manifest.get(key)
+        if isinstance(value, (str, int, float)):
+            text = str(value).strip()
+            if text:
+                return text
+    package = manifest.get("package")
+    if isinstance(package, dict):
+        value = package.get("version")
+        if isinstance(value, (str, int, float)):
+            text = str(value).strip()
+            if text:
+                return text
+    return ""
+
+
+def _version_tokens(value: str) -> List[object]:
+    tokens: List[object] = []
+    for token in re.findall(r"\d+|[A-Za-z]+", value.lower()):
+        if token.isdigit():
+            tokens.append(int(token))
+        else:
+            tokens.append(token)
+    return tokens
+
+
+def _compare_update_versions(left: str, right: str) -> int:
+    left_tokens = _version_tokens(left)
+    right_tokens = _version_tokens(right)
+    if not left_tokens or not right_tokens:
+        left_norm = left.strip().lower()
+        right_norm = right.strip().lower()
+        return (left_norm > right_norm) - (left_norm < right_norm)
+
+    for left_item, right_item in zip_longest(left_tokens, right_tokens, fillvalue=0):
+        if left_item == right_item:
+            continue
+        if isinstance(left_item, int) and isinstance(right_item, int):
+            return (left_item > right_item) - (left_item < right_item)
+        left_text = str(left_item)
+        right_text = str(right_item)
+        return (left_text > right_text) - (left_text < right_text)
+    return 0
+
+
+def _config_update_version_warning(package_version: str, recorded_version: str) -> str:
+    if not package_version or not recorded_version:
+        return ""
+    if _compare_update_versions(package_version, recorded_version) <= 0:
+        return f"更新包版本 {package_version} 小于或等于已记录版本 {recorded_version}，可能是重复应用或回退更新。"
+    return ""
+
+
+def _record_config_update_version(userprofile: Path, version: str, manifest_path: str, zip_path: Path) -> None:
+    state = _load_config_update_state(userprofile)
+    history = state.get("history")
+    if not isinstance(history, list):
+        history = []
+    entry = {
+        "version": version,
+        "manifest": manifest_path,
+        "zip_path": str(zip_path),
+        "applied_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    history.append(entry)
+    state["latest_version"] = version
+    state["latest_manifest"] = manifest_path
+    state["latest_zip_path"] = str(zip_path)
+    state["updated_at"] = entry["applied_at"]
+    state["history"] = history[-20:]
+    _save_config_update_state(userprofile, state)
+
+
+def _normalize_posix_parts(value: object, allow_trailing_slash: bool = False) -> Optional[List[str]]:
+    if not isinstance(value, str):
+        return None
+    raw = value.replace("\\", "/").strip()
+    if not raw or "\x00" in raw:
+        return None
+    if raw.endswith("/") and allow_trailing_slash:
+        raw = raw.rstrip("/")
+    elif raw.endswith("/"):
+        raw = raw.rstrip("/")
+    if not raw:
+        return None
+    posix_path = PurePosixPath(raw)
+    if posix_path.is_absolute():
+        return None
+    parts = [part for part in posix_path.parts if part not in ("", ".")]
+    if not parts:
+        return None
+    for part in parts:
+        if part == ".." or ":" in part:
+            return None
+    return parts
+
+
+def _target_for_config_update_path(value: object, userprofile: Path) -> Tuple[Path, str]:
+    parts = _normalize_posix_parts(value)
+    if not parts:
+        raise ValueError("目标路径为空或格式无效")
+    codex_dir = userprofile / ".codex"
+    switcher_dir = userprofile / ".codex-config-switch"
+    root = parts[0].lower()
+    rest = parts[1:]
+    if root == ".codex":
+        target = codex_dir / Path(*rest) if rest else codex_dir
+    elif root == ".codex-config-switch":
+        target = switcher_dir / Path(*rest) if rest else switcher_dir
+    else:
+        raise ValueError("目标路径必须位于 .codex 或 .codex-config-switch 下")
+
+    if not (_is_relative_to(target, codex_dir) or _is_relative_to(target, switcher_dir)):
+        raise ValueError("目标路径越界")
+    backup_root = switcher_dir / "package_update_backups"
+    if _is_relative_to(target, backup_root):
+        raise ValueError("不允许直接修改配置更新备份目录")
+    return target, str(PurePosixPath(*parts))
+
+
+def _manifest_entry_path(info_name: str) -> Optional[str]:
+    parts = _normalize_posix_parts(info_name, allow_trailing_slash=True)
+    if not parts:
+        return None
+    return str(PurePosixPath(*parts))
+
+
+def _find_config_update_manifest(archive: zipfile.ZipFile) -> Tuple[str, str]:
+    candidates: List[Tuple[str, str]] = []
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        normalized = _manifest_entry_path(info.filename)
+        if not normalized:
+            continue
+        if PurePosixPath(normalized).name.lower() in UPDATE_MANIFEST_NAMES:
+            candidates.append((normalized, info.filename))
+    if not candidates:
+        raise ValueError("压缩包中未找到 codex_update.yml")
+    candidates.sort(key=lambda item: (len(PurePosixPath(item[0]).parts), item[0].lower()))
+    normalized_path, archive_path = candidates[0]
+    manifest_dir = str(PurePosixPath(normalized_path).parent)
+    if manifest_dir == ".":
+        manifest_dir = ""
+    return archive_path, manifest_dir
+
+
+def _read_config_update_manifest(archive: zipfile.ZipFile, manifest_path: str) -> Dict[str, object]:
+    try:
+        raw = archive.read(manifest_path).decode("utf-8-sig")
+    except Exception as exc:
+        raise ValueError(f"无法读取更新清单：{exc}") from exc
+    try:
+        data = yaml.safe_load(raw)
+    except Exception as exc:
+        raise ValueError(f"更新清单 YAML 无法解析：{exc}") from exc
+    if data is None:
+        data = {}
+    if isinstance(data, list):
+        return {"operations": data}
+    if not isinstance(data, dict):
+        raise ValueError("更新清单顶层必须是对象或操作列表")
+    return data
+
+
+def _manifest_operations(manifest: Dict[str, object]) -> List[object]:
+    operations = manifest.get("operations")
+    if operations is None:
+        operations = manifest.get("actions")
+    if operations is None:
+        operations = manifest.get("ops")
+    if not isinstance(operations, list):
+        raise ValueError("更新清单缺少 operations 列表")
+    return operations
+
+
+def _normalize_update_action(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    action = value.strip().lower()
+    if action in ("copy", "write", "add", "replace", "overwrite", "upsert"):
+        return "copy"
+    if action in ("delete", "remove", "rm"):
+        return "delete"
+    if action in ("mkdir", "create_dir", "create-directory"):
+        return "mkdir"
+    return action
+
+
+def _operation_field(op: Dict[str, object], *names: str) -> object:
+    for name in names:
+        if name in op:
+            return op[name]
+    return None
+
+
+def _manifest_bool(value: object, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("1", "true", "yes", "y", "on"):
+            return True
+        if lowered in ("0", "false", "no", "n", "off"):
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _source_path_from_manifest(value: object, manifest_dir: str) -> Optional[str]:
+    parts = _normalize_posix_parts(value, allow_trailing_slash=True)
+    if not parts:
+        return None
+    base_parts: List[str] = []
+    if manifest_dir:
+        base_parts = list(PurePosixPath(manifest_dir).parts)
+    return str(PurePosixPath(*(base_parts + parts)))
+
+
+def _zip_file_index(archive: zipfile.ZipFile) -> Dict[str, zipfile.ZipInfo]:
+    result: Dict[str, zipfile.ZipInfo] = {}
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        normalized = _manifest_entry_path(info.filename)
+        if normalized:
+            result[normalized] = info
+    return result
+
+
+def _copy_plan_entries(
+    op_index: int,
+    op: Dict[str, object],
+    manifest_dir: str,
+    zip_files: Dict[str, zipfile.ZipInfo],
+    userprofile: Path,
+) -> Tuple[List[Dict[str, object]], Optional[str]]:
+    source_value = _operation_field(op, "source", "src", "from")
+    target_value = _operation_field(op, "target", "dest", "destination", "to", "path")
+    source = _source_path_from_manifest(source_value, manifest_dir)
+    if not source:
+        return [], "copy 操作缺少有效 source"
+    try:
+        target_path, rel_target = _target_for_config_update_path(target_value, userprofile)
+    except Exception as exc:
+        return [], str(exc)
+
+    overwrite = _manifest_bool(op.get("overwrite"), True)
+    if source in zip_files:
+        info = zip_files[source]
+        return [
+            {
+                "action": "copy",
+                "operation_index": op_index,
+                "source": source,
+                "entry": info.filename,
+                "target": str(target_path),
+                "relative_target": rel_target,
+                "size": info.file_size,
+                "exists": target_path.exists(),
+                "overwrite": overwrite,
+            }
+        ], None
+
+    prefix = source.rstrip("/") + "/"
+    matched: List[Dict[str, object]] = []
+    for normalized, info in sorted(zip_files.items()):
+        if not normalized.startswith(prefix):
+            continue
+        rel_parts = PurePosixPath(normalized).relative_to(PurePosixPath(source)).parts
+        child_target = target_path / Path(*rel_parts)
+        child_rel = str(PurePosixPath(rel_target, *rel_parts))
+        matched.append(
+            {
+                "action": "copy",
+                "operation_index": op_index,
+                "source": normalized,
+                "entry": info.filename,
+                "target": str(child_target),
+                "relative_target": child_rel,
+                "size": info.file_size,
+                "exists": child_target.exists(),
+                "overwrite": overwrite,
+            }
+        )
+    if not matched:
+        return [], f"source 不存在于压缩包：{source}"
+    return matched, None
+
+
+def _single_target_plan_entry(
+    op_index: int,
+    action: str,
+    op: Dict[str, object],
+    userprofile: Path,
+) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+    target_value = _operation_field(op, "target", "dest", "destination", "to", "path")
+    try:
+        target_path, rel_target = _target_for_config_update_path(target_value, userprofile)
+    except Exception as exc:
+        return None, str(exc)
+    if action == "delete" and rel_target in (".codex", ".codex-config-switch"):
+        return None, "不允许删除配置根目录"
+    return {
+        "action": action,
+        "operation_index": op_index,
+        "target": str(target_path),
+        "relative_target": rel_target,
+        "exists": target_path.exists(),
+        "is_dir": target_path.is_dir(),
+    }, None
+
+
+def _build_config_update_plan(archive: zipfile.ZipFile, userprofile: Path) -> Dict[str, object]:
+    manifest_path, manifest_dir = _find_config_update_manifest(archive)
+    manifest = _read_config_update_manifest(archive, manifest_path)
+    package_version = _manifest_version(manifest)
+    update_state = _load_config_update_state(userprofile)
+    recorded_raw = update_state.get("latest_version")
+    recorded_version = str(recorded_raw).strip() if isinstance(recorded_raw, (str, int, float)) else ""
+    version_warning = _config_update_version_warning(package_version, recorded_version)
+    operations_raw = _manifest_operations(manifest)
+    zip_files = _zip_file_index(archive)
+    operations: List[Dict[str, object]] = []
+    skipped: List[Dict[str, str]] = []
+
+    for idx, raw_op in enumerate(operations_raw, start=1):
+        if not isinstance(raw_op, dict):
+            skipped.append({"operation": str(idx), "reason": "操作必须是对象"})
+            continue
+        action = _normalize_update_action(_operation_field(raw_op, "action", "op"))
+        if action == "copy":
+            entries, error = _copy_plan_entries(idx, raw_op, manifest_dir, zip_files, userprofile)
+            if error:
+                skipped.append({"operation": str(idx), "action": "copy", "reason": error})
+                continue
+            operations.extend(entries)
+        elif action in ("delete", "mkdir"):
+            entry, error = _single_target_plan_entry(idx, action, raw_op, userprofile)
+            if error:
+                skipped.append({"operation": str(idx), "action": action, "reason": error})
+                continue
+            if entry:
+                operations.append(entry)
+        else:
+            skipped.append({"operation": str(idx), "reason": f"不支持的 action：{action or '-'}"})
+
+    return {
+        "manifest": manifest_path,
+        "package_version": package_version,
+        "recorded_version": recorded_version,
+        "version_warning": version_warning,
+        "operations": operations,
+        "files": [op for op in operations if op.get("action") == "copy"],
+        "skipped": skipped,
+        "backup_root": str((userprofile / ".codex-config-switch") / "package_update_backups"),
+        "version_state_path": str(_config_update_state_path(userprofile)),
+    }
+
+
+def _backup_existing_path(path: Path, rel_target: str, backup_dir: Path, backed_up: set[str]) -> Optional[Path]:
+    key = str(path.resolve(strict=False)).lower()
+    if key in backed_up or not path.exists():
+        return None
+    backup_path = backup_dir / Path(rel_target)
+    backup_path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_dir():
+        shutil.copytree(path, backup_path, dirs_exist_ok=True)
+    else:
+        shutil.copy2(path, backup_path)
+    backed_up.add(key)
+    return backup_path
+
+
+def _delete_existing_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        original_attrs = _clear_windows_attributes_temporarily(path)
+        try:
+            path.unlink()
+        finally:
+            if original_attrs is not None and path.exists():
+                kernel32 = ctypes.windll.kernel32
+                set_attrs = kernel32.SetFileAttributesW
+                set_attrs.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
+                set_attrs(str(path), original_attrs)
+
+
+def plan_config_update_zip(zip_path: Path, userprofile: Optional[Path] = None) -> Dict[str, object]:
+    base = userprofile or USERPROFILE_DIR
+    path = Path(zip_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"压缩包不存在：{path}")
+
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            plan = _build_config_update_plan(archive, base)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("压缩包无法读取或格式无效") from exc
+    plan["zip_path"] = str(path)
+    return plan
+
+
+def apply_config_update_zip(zip_path: Path, userprofile: Optional[Path] = None) -> Dict[str, object]:
+    base = userprofile or USERPROFILE_DIR
+    path = Path(zip_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"压缩包不存在：{path}")
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = (base / ".codex-config-switch") / "package_update_backups" / f"config_update_{stamp}"
+    created: List[str] = []
+    updated: List[str] = []
+    deleted: List[str] = []
+    dirs_created: List[str] = []
+    unchanged: List[str] = []
+    failed: List[Dict[str, str]] = []
+    backups: List[str] = []
+    backed_up: set[str] = set()
+    version_recorded = False
+    version_record_error = ""
+
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            plan = _build_config_update_plan(archive, base)
+            operations = plan.get("operations")
+            if not isinstance(operations, list) or not operations:
+                raise ValueError("更新清单中没有可应用的操作")
+
+            for op in operations:
+                if not isinstance(op, dict):
+                    continue
+                action = str(op.get("action", ""))
+                rel_target = str(op.get("relative_target", ""))
+                target = Path(str(op.get("target", "")))
+                try:
+                    if action == "copy":
+                        entry = str(op.get("entry", ""))
+                        data = archive.read(entry)
+                        overwrite = _manifest_bool(op.get("overwrite"), True)
+
+                        if target.exists() and target.is_dir():
+                            failed.append({"action": action, "target": rel_target, "error": "目标位置已存在同名目录"})
+                            continue
+
+                        current = target.read_bytes() if target.exists() else None
+                        if current == data:
+                            unchanged.append(rel_target)
+                            continue
+                        if current is not None and not overwrite:
+                            failed.append({"action": action, "target": rel_target, "error": "目标已存在且 overwrite=false"})
+                            continue
+                        backup_path = _backup_existing_path(target, rel_target, backup_dir, backed_up)
+                        if backup_path is not None:
+                            backups.append(str(backup_path))
+                        safe_write_bytes(target, data)
+                        if current is None:
+                            created.append(rel_target)
+                        else:
+                            updated.append(rel_target)
+                    elif action == "delete":
+                        if not target.exists():
+                            unchanged.append(rel_target)
+                            continue
+                        backup_path = _backup_existing_path(target, rel_target, backup_dir, backed_up)
+                        if backup_path is not None:
+                            backups.append(str(backup_path))
+                        _delete_existing_path(target)
+                        deleted.append(rel_target)
+                    elif action == "mkdir":
+                        if target.exists() and not target.is_dir():
+                            failed.append({"action": action, "target": rel_target, "error": "目标位置已存在同名文件"})
+                            continue
+                        if target.is_dir():
+                            unchanged.append(rel_target)
+                            continue
+                        target.mkdir(parents=True, exist_ok=True)
+                        dirs_created.append(rel_target)
+                except Exception as exc:
+                    failed.append({"action": action, "target": rel_target, "error": str(exc)})
+    except zipfile.BadZipFile as exc:
+        raise ValueError("压缩包无法读取或格式无效") from exc
+
+    package_version = str(plan.get("package_version") or "").strip()
+    if package_version and not failed:
+        try:
+            _record_config_update_version(base, package_version, str(plan.get("manifest") or ""), path)
+            version_recorded = True
+        except Exception as exc:
+            version_record_error = str(exc)
+
+    result = dict(plan)
+    result["zip_path"] = str(path)
+    result.update(
+        {
+            "backup_dir": str(backup_dir) if backups else "",
+            "backups": backups,
+            "created": created,
+            "updated": updated,
+            "deleted": deleted,
+            "dirs_created": dirs_created,
+            "unchanged": unchanged,
+            "failed": failed,
+            "version_recorded": version_recorded,
+            "version_record_error": version_record_error,
+        }
+    )
+    return result
 
 

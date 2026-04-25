@@ -43,6 +43,7 @@ from codex_switcher import (
     extract_host,
     find_codex_exe,
     get_active_account,
+    get_config_update_version_state,
     load_store,
     log_exception,
     ping_average,
@@ -50,7 +51,9 @@ from codex_switcher import (
     apply_env_for_account,
     http_head_average,
     LOG_PATH,
+    apply_config_update_zip,
     post_json,
+    plan_config_update_zip,
     save_store,
     safe_write_text,
     set_active_account,
@@ -59,7 +62,7 @@ from codex_switcher import (
 
 
 APP_TITLE = "Codex Switcher"
-APP_VERSION = "2.0.4"
+APP_VERSION = "2.0.5"
 
 CODING_COMPONENTS = [
     "Codex",
@@ -3408,6 +3411,8 @@ class SettingsPage(QtWidgets.QWidget):
     def __init__(self, state: AppState) -> None:
         super().__init__()
         self.state = state
+        self.update_zip_path: Optional[Path] = None
+        self.setAcceptDrops(True)
 
         layout = QtWidgets.QVBoxLayout(self)
         header = QtWidgets.QLabel("更多设置")
@@ -3432,16 +3437,65 @@ class SettingsPage(QtWidgets.QWidget):
         appearance_layout.addStretch(1)
         layout.addWidget(appearance_group)
 
+        update_group = QtWidgets.QGroupBox("配置压缩包更新")
+        update_group.setAcceptDrops(True)
+        update_group.installEventFilter(self)
+        apply_white_shadow(update_group)
+        update_layout = QtWidgets.QVBoxLayout(update_group)
+
+        path_row = QtWidgets.QHBoxLayout()
+        self.update_zip_label = QtWidgets.QLabel("未选择压缩包（可拖入 .zip）")
+        self.update_zip_label.setWordWrap(True)
+        self.update_zip_label.setAcceptDrops(True)
+        self.update_zip_label.installEventFilter(self)
+        self.update_zip_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.pick_update_zip_btn = QtWidgets.QPushButton("选择压缩包")
+        self.pick_update_zip_btn.clicked.connect(self.pick_update_zip)
+        path_row.addWidget(self.update_zip_label, 1)
+        path_row.addWidget(self.pick_update_zip_btn)
+        update_layout.addLayout(path_row)
+
+        action_row = QtWidgets.QHBoxLayout()
+        self.preview_update_zip_btn = QtWidgets.QPushButton("预览内容")
+        self.preview_update_zip_btn.clicked.connect(self.preview_update_zip)
+        self.apply_update_zip_btn = QtWidgets.QPushButton("备份并应用")
+        self.apply_update_zip_btn.clicked.connect(self.apply_update_zip)
+        self.open_update_backup_btn = QtWidgets.QPushButton("打开备份目录")
+        self.open_update_backup_btn.clicked.connect(self.open_update_backup_dir)
+        action_row.addWidget(self.preview_update_zip_btn)
+        action_row.addWidget(self.apply_update_zip_btn)
+        action_row.addWidget(self.open_update_backup_btn)
+        action_row.addStretch(1)
+        update_layout.addLayout(action_row)
+
+        self.update_zip_detail = QtWidgets.QPlainTextEdit()
+        self.update_zip_detail.setReadOnly(True)
+        self.update_zip_detail.setMinimumHeight(150)
+        self.update_zip_detail.setAcceptDrops(True)
+        self.update_zip_detail.installEventFilter(self)
+        self.update_zip_detail.setPlainText(self._default_update_zip_help())
+        update_layout.addWidget(self.update_zip_detail)
+
+        self.update_zip_status = QtWidgets.QLabel("")
+        set_label_tone(self.update_zip_status, "muted")
+        update_layout.addWidget(self.update_zip_status)
+        layout.addWidget(update_group)
+
         info_group = QtWidgets.QGroupBox("版本信息")
         apply_white_shadow(info_group)
         info_layout = QtWidgets.QVBoxLayout(info_group)
         self.current_version = QtWidgets.QLabel(f"当前版本：{APP_VERSION}")
+        self.config_package_version = QtWidgets.QLabel("配置包版本：未记录")
+        self.config_package_version.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.config_package_version.setWordWrap(True)
         info_layout.addWidget(self.current_version)
+        info_layout.addWidget(self.config_package_version)
         layout.addWidget(info_group)
 
         layout.addStretch(1)
         self._update_theme_combo_width()
         self._sync_theme_combo()
+        self._sync_config_package_version()
 
     def _header_font(self) -> QtGui.QFont:
         font = QtGui.QFont("Segoe UI", 12)
@@ -3450,7 +3504,22 @@ class SettingsPage(QtWidgets.QWidget):
 
     def on_show(self) -> None:
         self._sync_theme_combo()
+        self._sync_config_package_version()
         return
+
+    def _sync_config_package_version(self) -> None:
+        state = get_config_update_version_state()
+        version = str(state.get("version") or "")
+        updated_at = str(state.get("updated_at") or "")
+        state_path = str(state.get("state_path") or "")
+        if version:
+            suffix = f"（{updated_at}）" if updated_at else ""
+            text = f"配置包版本：{version}{suffix}"
+        else:
+            text = "配置包版本：未记录"
+        self.config_package_version.setText(text)
+        if state_path:
+            self.config_package_version.setToolTip(state_path)
 
     def _sync_theme_combo(self) -> None:
         mode = normalize_theme_mode(self.state.store.get("theme_mode"))
@@ -3483,6 +3552,344 @@ class SettingsPage(QtWidgets.QWidget):
         if app is not None:
             apply_theme(app, mode)
         self.theme_status.setText(f"当前：{'黑暗模式' if mode == 'dark' else '浅色模式'}（立即生效）")
+
+    def _default_update_zip_help(self) -> str:
+        return "\n".join(
+            [
+                "压缩包需要包含 codex_update.yml，所有更新动作由清单声明。",
+                "清单可提供 version 字段；应用成功后会记录版本，低于或等于已记录版本时会提醒。",
+                "可以点击“选择压缩包”，也可以把 .zip 文件拖到本区域。",
+                "",
+                "示例：",
+                "version: 2.0.5",
+                "operations:",
+                "  - action: copy",
+                "    source: payload/config.toml",
+                "    target: .codex/config.toml",
+                "  - action: copy",
+                "    source: payload/skills/demo",
+                "    target: .codex/skills/demo",
+                "  - action: delete",
+                "    target: .codex/old_file.json",
+                "",
+                "支持 action: copy / delete / mkdir。target 必须位于 .codex 或 .codex-config-switch 下；覆盖和删除前会自动备份。",
+            ]
+        )
+
+    def _format_update_size(self, value: object) -> str:
+        try:
+            size = int(value)
+        except Exception:
+            return "未知大小"
+        if size < 1024:
+            return f"{size} B"
+        if size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size / 1024 / 1024:.1f} MB"
+
+    def _format_update_plan(self, plan: Dict[str, object]) -> str:
+        operations = plan.get("operations")
+        skipped = plan.get("skipped")
+        apply_ops = operations if isinstance(operations, list) else []
+        skipped_files = skipped if isinstance(skipped, list) else []
+
+        package_version = str(plan.get("package_version") or "")
+        recorded_version = str(plan.get("recorded_version") or "")
+        lines = [f"清单文件：{plan.get('manifest', '-')}"]
+        lines.append(f"更新包版本：{package_version or '未提供'}")
+        lines.append(f"已记录版本：{recorded_version or '无'}")
+        version_warning = str(plan.get("version_warning") or "")
+        if version_warning:
+            lines.append(f"版本提醒：{version_warning}")
+        lines.append(f"可应用操作：{len(apply_ops)}")
+        for item in apply_ops[:100]:
+            if not isinstance(item, dict):
+                continue
+            action = str(item.get("action", ""))
+            target = item.get("relative_target")
+            if action == "copy":
+                overwrite = "允许覆盖" if item.get("overwrite", True) else "不覆盖"
+                state = "覆盖" if item.get("exists") else "新增"
+                size = self._format_update_size(item.get("size"))
+                lines.append(f"- [copy/{state}/{overwrite}] {item.get('source')} -> {target} ({size})")
+            elif action == "delete":
+                state = "存在" if item.get("exists") else "不存在"
+                lines.append(f"- [delete/{state}] {target}")
+            elif action == "mkdir":
+                state = "已存在" if item.get("exists") else "新建"
+                lines.append(f"- [mkdir/{state}] {target}")
+            else:
+                lines.append(f"- [{action or '-'}] {target}")
+        if len(apply_ops) > 100:
+            lines.append(f"... 还有 {len(apply_ops) - 100} 个操作未显示")
+
+        if skipped_files:
+            lines.append("")
+            lines.append(f"已跳过：{len(skipped_files)}")
+            for item in skipped_files[:30]:
+                if isinstance(item, dict):
+                    op_label = item.get("operation") or item.get("entry") or "-"
+                    action = item.get("action")
+                    prefix = f"操作 {op_label}"
+                    if action:
+                        prefix += f" ({action})"
+                    lines.append(f"- {prefix}：{item.get('reason')}")
+            if len(skipped_files) > 30:
+                lines.append(f"... 还有 {len(skipped_files) - 30} 个跳过条目未显示")
+
+        lines.append("")
+        lines.append(f"备份根目录：{plan.get('backup_root', '-')}")
+        return "\n".join(lines)
+
+    def _format_update_result(self, result: Dict[str, object]) -> str:
+        lines = ["应用结果："]
+        for key, label in (
+            ("updated", "已覆盖"),
+            ("created", "已新增"),
+            ("deleted", "已删除"),
+            ("dirs_created", "已建目录"),
+            ("unchanged", "未变化"),
+        ):
+            values = result.get(key)
+            entries = values if isinstance(values, list) else []
+            lines.append(f"{label}：{len(entries)}")
+            for entry in entries[:40]:
+                lines.append(f"- {entry}")
+            if len(entries) > 40:
+                lines.append(f"... 还有 {len(entries) - 40} 个未显示")
+
+        failed = result.get("failed")
+        failed_entries = failed if isinstance(failed, list) else []
+        if failed_entries:
+            lines.append("")
+            lines.append(f"失败：{len(failed_entries)}")
+            for item in failed_entries[:40]:
+                if isinstance(item, dict):
+                    lines.append(f"- {item.get('target') or item.get('entry')}：{item.get('error')}")
+            if len(failed_entries) > 40:
+                lines.append(f"... 还有 {len(failed_entries) - 40} 个失败条目未显示")
+
+        backup_dir = str(result.get("backup_dir") or "")
+        if backup_dir:
+            lines.append("")
+            lines.append(f"备份目录：{backup_dir}")
+        package_version = str(result.get("package_version") or "")
+        if package_version:
+            lines.append("")
+            if result.get("version_recorded"):
+                lines.append(f"已记录更新包版本：{package_version}")
+            else:
+                error = str(result.get("version_record_error") or "")
+                if error:
+                    lines.append(f"版本记录失败：{error}")
+                else:
+                    lines.append(f"未记录更新包版本：{package_version}")
+        return "\n".join(lines)
+
+    def _selected_update_zip(self) -> Optional[Path]:
+        if self.update_zip_path and self.update_zip_path.is_file():
+            return self.update_zip_path
+        message_warn(self, "提示", "请先选择一个 .zip 配置更新包")
+        return None
+
+    def _zip_path_from_mime(self, mime_data: QtCore.QMimeData) -> Optional[Path]:
+        urls = mime_data.urls() if mime_data.hasUrls() else []
+        if len(urls) != 1:
+            return None
+        url = urls[0]
+        if not url.isLocalFile():
+            return None
+        path = Path(url.toLocalFile())
+        if not path.is_file() or path.suffix.lower() != ".zip":
+            return None
+        return path
+
+    def _set_update_zip_path(self, zip_path: Path) -> None:
+        self.update_zip_path = zip_path
+        self.update_zip_label.setText(f"已选择：{self.update_zip_path}")
+        self.preview_update_zip()
+
+    def _handle_update_zip_drag(self, event: QtCore.QEvent) -> bool:
+        if event.type() not in (QtCore.QEvent.Type.DragEnter, QtCore.QEvent.Type.DragMove, QtCore.QEvent.Type.Drop):
+            return False
+        if not hasattr(event, "mimeData"):
+            return False
+        zip_path = self._zip_path_from_mime(event.mimeData())
+        if zip_path is None:
+            event.ignore()
+            return True
+        if event.type() == QtCore.QEvent.Type.Drop:
+            self._set_update_zip_path(zip_path)
+        event.acceptProposedAction()
+        return True
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if self._handle_update_zip_drag(event):
+            return True
+        return super().eventFilter(watched, event)
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
+        if not self._handle_update_zip_drag(event):
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QtGui.QDragMoveEvent) -> None:
+        if not self._handle_update_zip_drag(event):
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QtGui.QDropEvent) -> None:
+        if not self._handle_update_zip_drag(event):
+            super().dropEvent(event)
+
+    def pick_update_zip(self) -> None:
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "选择配置更新压缩包",
+            "",
+            "ZIP 压缩包 (*.zip)",
+        )
+        if not file_path:
+            return
+        self._set_update_zip_path(Path(file_path))
+
+    def preview_update_zip(self) -> None:
+        zip_path = self._selected_update_zip()
+        if not zip_path:
+            return
+        try:
+            plan = plan_config_update_zip(zip_path)
+        except Exception as exc:
+            self.update_zip_status.setText(f"预览失败：{exc}")
+            message_error(self, "失败", str(exc))
+            return
+        self.update_zip_detail.setPlainText(self._format_update_plan(plan))
+        operations = plan.get("operations")
+        count = len(operations) if isinstance(operations, list) else 0
+        version_warning = str(plan.get("version_warning") or "")
+        if version_warning:
+            self.update_zip_status.setText(f"预览完成：{count} 个可应用操作；{version_warning}")
+        else:
+            self.update_zip_status.setText(f"预览完成：{count} 个可应用操作")
+
+    def apply_update_zip(self) -> None:
+        zip_path = self._selected_update_zip()
+        if not zip_path:
+            return
+
+        try:
+            plan = plan_config_update_zip(zip_path)
+        except Exception as exc:
+            self.update_zip_status.setText(f"预览失败：{exc}")
+            message_error(self, "失败", str(exc))
+            return
+
+        operations = plan.get("operations")
+        apply_ops = operations if isinstance(operations, list) else []
+        if not apply_ops:
+            self.update_zip_detail.setPlainText(self._format_update_plan(plan))
+            self.update_zip_status.setText("更新清单中没有可应用的操作")
+            message_warn(self, "提示", "更新清单中没有可应用的操作")
+            return
+
+        copy_count = sum(1 for item in apply_ops if isinstance(item, dict) and item.get("action") == "copy")
+        overwrite_count = sum(
+            1 for item in apply_ops if isinstance(item, dict) and item.get("action") == "copy" and item.get("exists")
+        )
+        delete_count = sum(1 for item in apply_ops if isinstance(item, dict) and item.get("action") == "delete")
+        mkdir_count = sum(1 for item in apply_ops if isinstance(item, dict) and item.get("action") == "mkdir")
+        version_warning = str(plan.get("version_warning") or "")
+        if version_warning:
+            message_warn(self, "版本提醒", f"{version_warning}\n\n仍可继续应用。")
+        preview_lines = []
+        for item in apply_ops[:12]:
+            if isinstance(item, dict):
+                action = str(item.get("action", ""))
+                if action == "copy":
+                    label = "覆盖" if item.get("exists") else "新增"
+                elif action == "delete":
+                    label = "删除"
+                elif action == "mkdir":
+                    label = "建目录"
+                else:
+                    label = action or "-"
+                preview_lines.append(f"- [{label}] {item.get('relative_target')}")
+        if len(apply_ops) > 12:
+            preview_lines.append(f"... 还有 {len(apply_ops) - 12} 个操作")
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "确认应用配置更新",
+            "将按 codex_update.yml 应用配置更新。\n\n"
+            f"复制/写入：{copy_count} 个\n"
+            f"其中覆盖：{overwrite_count} 个（覆盖前会自动备份）\n"
+            f"删除：{delete_count} 个（删除前会自动备份）\n"
+            f"建目录：{mkdir_count} 个\n\n"
+            + "\n".join(preview_lines)
+            + "\n\n是否继续？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            result = apply_config_update_zip(zip_path)
+            self._reload_state_after_config_update()
+        except Exception as exc:
+            self.update_zip_status.setText(f"应用失败：{exc}")
+            message_error(self, "失败", str(exc))
+            return
+
+        self.update_zip_detail.setPlainText(self._format_update_result(result))
+        updated_entries = result.get("updated")
+        created_entries = result.get("created")
+        deleted_entries = result.get("deleted")
+        dirs_created_entries = result.get("dirs_created")
+        unchanged_entries = result.get("unchanged")
+        failed_entries = result.get("failed")
+        updated = len(updated_entries) if isinstance(updated_entries, list) else 0
+        created = len(created_entries) if isinstance(created_entries, list) else 0
+        deleted = len(deleted_entries) if isinstance(deleted_entries, list) else 0
+        dirs_created = len(dirs_created_entries) if isinstance(dirs_created_entries, list) else 0
+        unchanged = len(unchanged_entries) if isinstance(unchanged_entries, list) else 0
+        failed = len(failed_entries) if isinstance(failed_entries, list) else 0
+        version_record_error = str(result.get("version_record_error") or "")
+        if failed:
+            self.update_zip_status.setText(
+                f"部分应用完成：新增 {created}，覆盖 {updated}，删除 {deleted}，建目录 {dirs_created}，未变化 {unchanged}，失败 {failed}"
+            )
+            message_warn(self, "提示", "配置更新已部分应用，详情请查看结果列表")
+        elif version_record_error:
+            self.update_zip_status.setText(
+                f"应用完成：新增 {created}，覆盖 {updated}，删除 {deleted}，建目录 {dirs_created}，未变化 {unchanged}；版本记录失败"
+            )
+            message_warn(self, "提示", f"配置更新已应用，但记录更新包版本失败：{version_record_error}")
+        else:
+            self.update_zip_status.setText(
+                f"应用完成：新增 {created}，覆盖 {updated}，删除 {deleted}，建目录 {dirs_created}，未变化 {unchanged}"
+            )
+            message_info(self, "完成", "配置更新已应用")
+
+    def _reload_state_after_config_update(self) -> None:
+        try:
+            self.state.store = load_store()
+            self.state.active_account = get_active_account(self.state.store)
+            self.state.theme_mode = normalize_theme_mode(self.state.store.get("theme_mode"))
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                apply_theme(app, self.state.theme_mode)
+            self._sync_theme_combo()
+            self._sync_config_package_version()
+        except Exception as exc:
+            log_exception(exc)
+
+    def open_update_backup_dir(self) -> None:
+        backup_root = get_codex_config_switch_dir() / "package_update_backups"
+        if not backup_root.exists():
+            message_warn(self, "提示", f"备份目录不存在：{backup_root}")
+            return
+        try:
+            os.startfile(str(backup_root))
+        except Exception as exc:
+            message_error(self, "失败", str(exc))
 
 class SessionManagerPage(QtWidgets.QWidget):
     def __init__(self, state: AppState) -> None:

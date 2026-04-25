@@ -6,6 +6,14 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$appVersion = "unknown"
+$mainPy = Join-Path $repoRoot "pyside_switcher.py"
+if (Test-Path $mainPy) {
+    $mainContent = Get-Content -Raw -Path $mainPy
+    if ($mainContent -match "APP_VERSION\s*=\s*['""]([^'""]+)['""]") {
+        $appVersion = $Matches[1]
+    }
+}
 Push-Location $repoRoot
 try {
     Write-Host "[1/3] Sync dependencies via uv"
@@ -32,12 +40,12 @@ if src.exists():
     }
 
     Write-Host "[3/3] Package with PyInstaller"
-    uv run --locked --group build pyinstaller --clean --noconfirm codex_switcher.spec
+    uv run --locked --group build python -m PyInstaller --clean --noconfirm codex_switcher.spec
     if ($LASTEXITCODE -ne 0) {
       throw "Packaging failed with exit code: $LASTEXITCODE"
     }
 
-    Write-Host "Done: dist/CodexSwitcher.exe"
+    Write-Host "Done: dist/CodexSwitcher_v$appVersion.exe"
 }
 finally {
     Pop-Location
