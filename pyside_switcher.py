@@ -59,7 +59,6 @@ from codex_switcher import (
 
 APP_TITLE = "Codex Switcher"
 APP_VERSION = "2.0.4"
-APP_REPO = "nkosi-fang/CodexSwitcher"
 
 CODING_COMPONENTS = [
     "Codex",
@@ -3401,7 +3400,7 @@ class SettingsPage(QtWidgets.QWidget):
         self.state = state
 
         layout = QtWidgets.QVBoxLayout(self)
-        header = QtWidgets.QLabel("检查更新")
+        header = QtWidgets.QLabel("更多设置")
         header.setFont(self._header_font())
         layout.addWidget(header)
 
@@ -3427,35 +3426,10 @@ class SettingsPage(QtWidgets.QWidget):
         apply_white_shadow(info_group)
         info_layout = QtWidgets.QVBoxLayout(info_group)
         self.current_version = QtWidgets.QLabel(f"当前版本：{APP_VERSION}")
-        self.latest_version = QtWidgets.QLabel("最新版本：-")
-        self.update_status = QtWidgets.QLabel("状态：未检查")
         info_layout.addWidget(self.current_version)
-        info_layout.addWidget(self.latest_version)
-        info_layout.addWidget(self.update_status)
         layout.addWidget(info_group)
 
-        notes_group = QtWidgets.QGroupBox("更新内容")
-        apply_white_shadow(notes_group)
-        notes_layout = QtWidgets.QVBoxLayout(notes_group)
-        self.release_notes = QtWidgets.QPlainTextEdit()
-        self.release_notes.setReadOnly(True)
-        self.release_notes.setMinimumHeight(120)
-        notes_layout.addWidget(self.release_notes)
-        layout.addWidget(notes_group)
-
-        action_row = QtWidgets.QHBoxLayout()
-        self.check_btn = QtWidgets.QPushButton("立即检查")
-        self.check_btn.clicked.connect(self.check_update)
-        self.open_release_btn = QtWidgets.QPushButton("打开发布页")
-        self.open_release_btn.clicked.connect(self.open_release_page)
-        action_row.addWidget(self.check_btn)
-        action_row.addWidget(self.open_release_btn)
-        action_row.addStretch(1)
-        layout.addLayout(action_row)
         layout.addStretch(1)
-        self._latest_url = f"https://github.com/{APP_REPO}/releases/latest"
-        self._checked_once = False
-        self._notified = False
         self._update_theme_combo_width()
         self._sync_theme_combo()
 
@@ -3466,9 +3440,6 @@ class SettingsPage(QtWidgets.QWidget):
 
     def on_show(self) -> None:
         self._sync_theme_combo()
-        if not self._checked_once:
-            self._checked_once = True
-            self.check_update(auto=True)
         return
 
     def _sync_theme_combo(self) -> None:
@@ -3502,159 +3473,6 @@ class SettingsPage(QtWidgets.QWidget):
         if app is not None:
             apply_theme(app, mode)
         self.theme_status.setText(f"当前：{'黑暗模式' if mode == 'dark' else '浅色模式'}（立即生效）")
-
-    def open_release_page(self) -> None:
-        QtGui.QDesktopServices.openUrl(QtCore.QUrl(self._latest_url))
-
-    def check_update(self, auto: bool = False) -> None:
-        self.check_btn.setEnabled(False)
-        self.update_status.setText("状态：检查中...")
-        self.latest_version.setText("最新版本：-")
-        if hasattr(self, "release_notes"):
-            self.release_notes.setPlainText("正在获取更新内容...")
-
-        def runner() -> None:
-            try:
-                ok, latest_ver, url, msg = self._get_latest_release()
-            except Exception as exc:
-                ok, latest_ver, url, msg = False, "-", "", str(exc)
-            notes_text = ""
-            if ok:
-                try:
-                    notes_text = self._get_release_notes(APP_VERSION, latest_ver)
-                except Exception as exc:
-                    notes_text = f"无法获取更新内容：{exc}"
-
-            def done() -> None:
-                self.check_btn.setEnabled(True)
-                if ok:
-                    self._latest_url = url or self._latest_url
-                    self.latest_version.setText(f"最新版本：{latest_ver}")
-                    if hasattr(self, "release_notes"):
-                        self.release_notes.setPlainText(notes_text or "无更新内容")
-                    status_text, has_update = self._compare_versions(APP_VERSION, latest_ver)
-                    self.update_status.setText(status_text)
-                    if has_update and not self._notified:
-                        self._notified = True
-                        message_info(self, "发现新版本", f"检测到新版本：{latest_ver}\n请前往发布页下载。")
-                else:
-                    self.update_status.setText(f"状态：{msg}")
-                    if hasattr(self, "release_notes"):
-                        self.release_notes.setPlainText(msg)
-
-            run_in_ui(done)
-
-        threading.Thread(target=runner, daemon=True).start()
-
-    def _filter_release_sections(self, body: str) -> str:
-        wanted = {"标题", "变更"}
-        lines = body.splitlines()
-        out: list[str] = []
-        keep = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("##"):
-                heading = stripped.lstrip("#").strip()
-                normalized = heading.replace("：", ":").strip()
-                keep = False
-                for w in wanted:
-                    if normalized == w or normalized.startswith(f"{w}:") or normalized.startswith(f"{w} "):
-                        keep = True
-                        out.append(f"## {w}")
-                        break
-                continue
-            if keep:
-                out.append(line.rstrip())
-        cleaned: list[str] = []
-        blank = False
-        for line in out:
-            if not line.strip():
-                if not blank:
-                    cleaned.append("")
-                blank = True
-            else:
-                cleaned.append(line)
-                blank = False
-        while cleaned and not cleaned[0].strip():
-            cleaned.pop(0)
-        while cleaned and not cleaned[-1].strip():
-            cleaned.pop()
-        return "\n".join(cleaned).strip()
-
-    def _get_release_notes(self, local_ver: str, latest_ver: str) -> str:
-        latest_sem = self._extract_semver(latest_ver) or latest_ver
-        if not latest_sem:
-            return "无法解析版本号，无法生成更新内容。"
-
-        api_url = f"https://api.github.com/repos/{APP_REPO}/releases?per_page=20"
-        req = urllib_request.Request(api_url, headers={"User-Agent": "CodexSwitcher"})
-        with urllib_request.urlopen(req, timeout=6) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if not isinstance(data, list) or not data:
-            return "无法获取更新内容。"
-
-        target = None
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            tag = item.get("tag_name") or ""
-            name = item.get("name") or ""
-            ver = self._extract_semver(tag) or self._extract_semver(name) or ""
-            if ver and ver == latest_sem:
-                target = item
-                break
-            if tag == latest_ver or name == latest_ver:
-                target = item
-                break
-        if target is None:
-            target = data[0]
-
-        body = target.get("body") or ""
-        filtered = self._filter_release_sections(body)
-        if not filtered:
-            return "未找到Release中的标题/变更内容。"
-        return filtered
-
-    def _get_latest_release(self) -> tuple[bool, str, str, str]:
-        try:
-            api_url = f"https://api.github.com/repos/{APP_REPO}/releases/latest"
-            req = urllib_request.Request(api_url, headers={"User-Agent": "CodexSwitcher"})
-            with urllib_request.urlopen(req, timeout=6) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            tag = data.get("tag_name") or data.get("name") or "未知"
-            url = data.get("html_url") or f"https://github.com/{APP_REPO}/releases/latest"
-            ver = self._extract_semver(tag) or tag
-            return True, ver, url, ""
-        except urllib_error.URLError:
-            return False, "-", "", "网络不可用或无法访问 GitHub，请检查网络/代理后重试。"
-        except Exception as exc:
-            return False, "-", "", str(exc)
-
-    def _extract_semver(self, text: str) -> Optional[str]:
-        match = re.search(r"\d+\.\d+\.\d+", text)
-        return match.group(0) if match else None
-
-    def _compare_versions(self, local: Optional[str], latest: Optional[str]) -> tuple[str, bool]:
-        local_sem = self._extract_semver(local or "")
-        latest_sem = self._extract_semver(latest or "")
-        if local_sem and latest_sem:
-            if local_sem == latest_sem:
-                return "状态：已是最新版本。", False
-            try:
-                local_parts = tuple(int(p) for p in local_sem.split("."))
-                latest_parts = tuple(int(p) for p in latest_sem.split("."))
-                if local_parts > latest_parts:
-                    return f"状态：本地版本 {local_sem} 高于最新 {latest_sem}。", False
-            except Exception:
-                pass
-            return f"状态：发现新版本 {latest_sem}。", True
-        if latest:
-            return f"状态：最新版本 {latest}。", False
-        return "状态：无法比较版本。", False
-
-
-
-
 
 class SessionManagerPage(QtWidgets.QWidget):
     def __init__(self, state: AppState) -> None:
@@ -4876,7 +4694,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_nav_button(nav, "VScode codex", "vscode_plugin")
         self._add_nav_button(nav, "中转站接口", "network")
         self._add_nav_button(nav, "OpenAI官网状态", "openai_status")
-        self._add_nav_button(nav, "检查更新", "settings")
+        self._add_nav_button(nav, "更多设置", "settings")
         nav.addStretch(1)
 
         initial_key = self._initial_page_key()
