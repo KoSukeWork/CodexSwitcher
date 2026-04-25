@@ -21,11 +21,13 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 
-CODEX_DIR = Path.home() / ".codex"
-PROFILE_STORE = CODEX_DIR / "codex_profiles.json"
+USERPROFILE_DIR = Path(os.environ.get("USERPROFILE") or Path.home())
+CODEX_DIR = USERPROFILE_DIR / ".codex"
+SWITCHER_DIR = USERPROFILE_DIR / ".codex-config-switch"
+PROFILE_STORE = SWITCHER_DIR / "codex_profiles.json"
 CONFIG_PATH = CODEX_DIR / "config.toml"
 AUTH_PATH = CODEX_DIR / "auth.json"
-LOG_PATH = CODEX_DIR / "codex_switcher.log"
+LOG_PATH = SWITCHER_DIR / "codex_switcher.log"
 _WIN_HIDDEN = getattr(stat, "FILE_ATTRIBUTE_HIDDEN", 0x2)
 _WIN_READONLY = getattr(stat, "FILE_ATTRIBUTE_READONLY", 0x1)
 
@@ -621,7 +623,6 @@ def test_model(
 
 
 def log_exception(exc: Exception) -> None:
-    CODEX_DIR.mkdir(parents=True, exist_ok=True)
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with LOG_PATH.open("a", encoding="utf-8") as fh:

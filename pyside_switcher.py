@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 import json
 import base64
+import hashlib
 import os
 import subprocess
 import re
@@ -212,6 +213,10 @@ def get_codex_config_path(userprofile: Optional[Path] = None) -> Path:
 def get_codex_config_switch_dir(userprofile: Optional[Path] = None) -> Path:
     base = userprofile or get_userprofile_dir()
     return base / ".codex-config-switch"
+
+
+def get_config_toml_library_dir(userprofile: Optional[Path] = None) -> Path:
+    return get_codex_config_switch_dir(userprofile) / "config_toml"
 
 
 def message_info(parent: QtWidgets.QWidget, title: str, text: str) -> None:
@@ -1040,7 +1045,7 @@ class NetworkDiagnosticsPage(QtWidgets.QWidget):
         hint_label.setTextFormat(QtCore.Qt.RichText)
         hint_label.setText(
             '<ul style="margin:0 0 0 14px; padding:0; line-height:1.6;">'
-            '<li>本工具使用UA请求方式探测，但也有被中转站/WAF风控拦截的可能性，请检查日志文件 .codex\\codex_switcher.log。</li>'
+            '<li>本工具使用UA请求方式探测，但也有被中转站/WAF风控拦截的可能性，请检查日志文件 .codex-config-switch\\codex_switcher.log。</li>'
             '<li>可用模型主要是在oai推出新模型时，查看中转站账号池中能不能使用的目的。</li>'
             '<li>中转站账号池无号源时，理论上不影响中转站接口和模型探测。</li>'
             '</ul>'
@@ -2214,7 +2219,7 @@ class ConfigSwitchPage(QtWidgets.QWidget):
     def __init__(self, state: AppState) -> None:
         super().__init__()
         self.state = state
-        self.switch_dir = get_codex_config_switch_dir()
+        self.switch_dir = get_config_toml_library_dir()
         self.target_path = get_codex_config_path()
         self.selected_path: Optional[Path] = None
 
@@ -2283,7 +2288,7 @@ class ConfigSwitchPage(QtWidgets.QWidget):
         hint_layout = QtWidgets.QVBoxLayout(hint_group)
         hint_label = QtWidgets.QLabel(
             '<ul style="margin:0 0 0 14px; padding:0; line-height:1.6;">'
-            '<li>请把需要切换的多个 `.toml` 文件放到 `%USERPROFILE%\\.codex-config-switch\\`。</li>'
+            '<li>请把需要切换的多个 `.toml` 文件放到 `%USERPROFILE%\\.codex-config-switch\\config_toml\\`。</li>'
             '<li>点击“切换到选中配置”后，会用选中的文件内容直接覆盖 `%USERPROFILE%\\.codex\\config.toml`。</li>'
             '<li>点击“保存当前配置到配置库”后，可把当前 `%USERPROFILE%\\.codex\\config.toml` 另存到配置库。</li>'
             '<li>点击右侧“删除配置”后，可从配置库删除选中的 `.toml` 文件，不会影响当前已生效的 `%USERPROFILE%\\.codex\\config.toml`。</li>'
@@ -2316,7 +2321,7 @@ class ConfigSwitchPage(QtWidgets.QWidget):
         self.delete_btn.setEnabled(False)
 
     def refresh_list(self) -> None:
-        self.switch_dir = get_codex_config_switch_dir()
+        self.switch_dir = get_config_toml_library_dir()
         self.target_path = get_codex_config_path()
         self.switch_dir_label.setText(f"配置库目录：{self.switch_dir}")
         self.target_path_label.setText(f"目标 config.toml：{self.target_path}")
@@ -2841,7 +2846,7 @@ class SkillsPage(QtWidgets.QWidget):
 
 
     def _backup_base_dir(self) -> Path:
-        return self._skills_root().parent
+        return get_codex_config_switch_dir() / "skills_backups"
 
     def _generate_backup_dir(self) -> Path:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3188,7 +3193,12 @@ class VSCodePluginPage(QtWidgets.QWidget):
             message_error(self, "失败", str(exc))
 
     def _backup_dir_for_index(self, index_path: Path) -> Path:
-        backup_dir = index_path.parent / "backup"
+        ext_name = index_path.parent.name
+        if len(index_path.parents) > 2:
+            ext_name = index_path.parents[2].name
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", ext_name).strip("._-") or "extension"
+        digest = hashlib.sha1(str(index_path.parent).lower().encode("utf-8")).hexdigest()[:12]
+        backup_dir = get_codex_config_switch_dir() / "vscode_plugin_backups" / f"{safe_name[:80]}_{digest}"
         backup_dir.mkdir(parents=True, exist_ok=True)
         return backup_dir
 

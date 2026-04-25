@@ -42,9 +42,14 @@
 - 用户数据/配置主要落在以下目录：
   - `~/.codex/config.toml`
   - `~/.codex/auth.json`
-  - `~/.codex/codex_profiles.json`
-  - `~/.codex/codex_switcher.log`
-  - `~/.codex-config-switch/`
+  - `~/.codex/sessions/`
+  - `~/.codex/history.jsonl`
+  - `~/.codex/skills/`
+  - `~/.codex-config-switch/codex_profiles.json`
+  - `~/.codex-config-switch/codex_switcher.log`
+  - `~/.codex-config-switch/config_toml/*.toml`
+  - `~/.codex-config-switch/skills_backups/`
+  - `~/.codex-config-switch/vscode_plugin_backups/`
 - 修改相关逻辑时，优先保证：
   - 不破坏已有文件格式
   - 写入尽量保持幂等
