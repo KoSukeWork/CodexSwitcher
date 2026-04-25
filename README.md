@@ -5,7 +5,7 @@
 
 ## 完整功能
 - **Codex CLI 状态页**：移除“诊断信息”；新增一键更新、一键启动 Codex CLI / VS Code、一键修复常见 WebView 视图错误
-- **Codex CLI 生态配置**：检测本机 codex 路径/版本，并提供 config.toml 与 opencode 配置管理
+- **Codex CLI 生态配置**：检测本机 codex 路径/版本，并提供 config.toml 配置管理
 - **多账号切换**：管理多个账号/密钥/中转站地址，一键切换生效
 - **Codex 会话管理**：索引/详情/高级检索/导出/清理；右键打开文件夹、继续 CLI 会话、VS Code 打开会话目录、WebView 修复
 - **Skill 管理**：支持扫描识别本地 Codex skill，查看、导入、备份、删除
