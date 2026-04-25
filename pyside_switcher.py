@@ -3452,22 +3452,6 @@ class SettingsPage(QtWidgets.QWidget):
         action_row.addWidget(self.open_release_btn)
         action_row.addStretch(1)
         layout.addLayout(action_row)
-        letter_group = QtWidgets.QGroupBox("开发者留言")
-        apply_white_shadow(letter_group)
-        letter_layout = QtWidgets.QVBoxLayout(letter_group)
-        note = QtWidgets.QLabel(
-            "各位佬：<br><br>"
-            "感谢使用Codex Switcher。因为市面上已经有太多类似CC switch的成熟多账号管理工具。本质上，这就是一个套娃工具，基于对config.toml、auth.json 文件读取和修改，一开始我只是作为一个切换脚本供自己便用的。后来无意中分享给了一位群友，并在他的建议下进一步做了UI界面。<br><br>"
-            "我深知如果把它作为一个产品来说，本身是有很多不足和bug的；再者从我自己的使用习惯和角度来说，主力就是codex，所以开发时并没有考虑添加claude code的账号管理功能，以及对一些优秀的国产大模型的支持。我甚至有想过用Rust来重构，因为开源项目本身就是靠情怀支撑的。<br><br>"
-            "无奈手里还有太多的活要干（要给自己赚工资），只能利用闲暇之余，再慢慢debug和升级。<br><br>"
-            "如果佬对本产品有更好的想法和建议，欢迎交流、反馈，更欢迎您一起""fork+pr""，共同推动这个小工具的进步，这大概是我们在AI大浪潮席卷的时代，能够唯一留下的轻微足迹。<br><br>"
-            "反馈渠道:    L站、GitHub或者电子邮件:nkosi.fang@gmail.com<br>"
-            "<div style=\"text-align:right;\">nkosi</div>"
-        )
-        note.setWordWrap(True)
-        note.setTextFormat(QtCore.Qt.RichText)
-        letter_layout.addWidget(note)
-        layout.addWidget(letter_group)
         layout.addStretch(1)
         self._latest_url = f"https://github.com/{APP_REPO}/releases/latest"
         self._checked_once = False
